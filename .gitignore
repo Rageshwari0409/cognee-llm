@@ -1,0 +1,8 @@
+.mem-venv
+.pkl
+__pycache__
+.pyc
+node_modules
+.env
+.cognee_system
+
