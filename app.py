@@ -540,10 +540,10 @@ def render_knowledge_graph(username: str):
 
     # ── Status bar ───────────────────────────────────────────────────────
     if data_ready:
-        st.success("✅ **Exercise graph is ready.**")
+        st.success("**Exercise graph is ready.**")
     else:
         st.error(
-            "❌ **Ingestion failed.** Check that `exercises_500_transformed.json` is present next to `app.py` "
+            " **Ingestion failed.** Check that `exercises_500_transformed.json` is present next to `app.py` "
             "and that Neo4j / Gemini credentials are set in `.env`."
         )
 
@@ -551,7 +551,7 @@ def render_knowledge_graph(username: str):
     col_b1, _ = st.columns([1.5, 6.5])
     with col_b1:
         load_graph_btn = st.button(
-            "📊 Load Graph",
+            "Load Graph",
             key="cog_load_graph_btn",
             use_container_width=True,
         )
@@ -589,7 +589,7 @@ def render_knowledge_graph(username: str):
     # ── Full graph display ────────────────────────────────────────────────
     full_html = st.session_state.get("cognee_full_graph_html", "")
     if full_html:
-        with st.expander("🕸️  Full Exercise Knowledge Graph ", expanded=True):
+        with st.expander("Full Exercise Knowledge Graph ", expanded=True):
             st.caption(
                 "Click and drag nodes · scroll to zoom · hover for details. "
                 "Use the search box (top-left of the graph) to highlight nodes by name."
@@ -602,7 +602,7 @@ def render_knowledge_graph(username: str):
 
     # ── 3. Chat + Context Graph panel ─────────────────────────────────────
     st.markdown(
-        "<h3 style='color:#0F172A;margin-bottom:4px;'>💬 Query the Exercise Knowledge Graph</h3>",
+        "<h3 style='color:#0F172A;margin-bottom:4px;'>Query the Exercise Knowledge Graph</h3>",
         unsafe_allow_html=True,
     )
     st.caption(
@@ -648,7 +648,7 @@ def render_knowledge_graph(username: str):
             ask_btn  = True   # treat as if Ask was clicked
 
     with col_ctx:
-        st.markdown("**🔍 Context Subgraph**")
+        st.markdown("**Context Subgraph**")
         st.caption("Triplets retrieved from the knowledge graph to answer your question. Blue = source · Green = target.")
         ctx_placeholder = st.empty()
 
@@ -702,7 +702,7 @@ def render_knowledge_graph(username: str):
     # ── 4. Chat history (collapsible) ─────────────────────────────────────
     history = st.session_state.get("cognee_chat_history", [])
     if len(history) > 1:
-        with st.expander(f"📜 Chat History ({len(history)} questions)", expanded=False):
+        with st.expander(f"Chat History ({len(history)} questions)", expanded=False):
             for i, (q, r) in enumerate(reversed(history)):
                 st.markdown(f"**Q{len(history)-i}:** {q}")
                 st.markdown(
@@ -717,7 +717,7 @@ def render_knowledge_graph(username: str):
                 )
 
     if history:
-        if st.button("🗑️ Clear Cognee Chat History", key="cog_clear_history"):
+        if st.button(" Clear Cognee Chat History", key="cog_clear_history"):
             st.session_state["cognee_chat_history"] = []
             st.session_state["cognee_last_result"]  = {}
             st.rerun()
