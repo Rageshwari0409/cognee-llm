@@ -478,14 +478,25 @@ def _lance_table_exists() -> bool:
     return lance_table.exists()
 
 
+def _triplet_table_exists() -> bool:
+    """True iff the LanceDB Triplet_text collection exists (required for TRIPLET_COMPLETION)."""
+    triplet_table = COGNEE_SYSTEM / "databases" / "cognee.lancedb" / "Triplet_text.lance"
+    return triplet_table.exists()
+
+
 def data_exists_in_cognee(api_key: Optional[str] = None) -> bool:
     """
-    True if the configured Neo4j graph already contains exercise data.
-    Queries Neo4j directly so we trust the actual graph state, not a possibly
-    stale local LanceDB folder. Falls back to the local LanceDB file check if
-    Neo4j is unreachable.
+    True only when BOTH the Neo4j graph contains exercise nodes AND the LanceDB
+    Triplet_text collection exists. The Triplet_text collection is created by
+    add_data_points(embed_triplets=True) during ingest — if it is absent,
+    TRIPLET_COMPLETION searches will fail with NoDataError even when Neo4j has
+    nodes (e.g. after a LanceDB reset or a cross-environment data migration).
     """
     if not COGNEE_IMPORTABLE:
+        return False
+
+    # If the triplet collection is missing, always re-ingest regardless of Neo4j state.
+    if not _triplet_table_exists():
         return False
 
     async def _check() -> bool:
@@ -653,11 +664,20 @@ def query_exercise_graph(question: str, api_key: Optional[str] = None) -> dict:
         phase  = f"ui::{stype.value}"
 
         with tracker.phase(phase):
-            raw = await search(
-                query_text=question,
-                query_type=stype,
-                system_prompt=EXERCISE_QA_SYSTEM_PROMPT,
-            )
+            try:
+                raw = await search(
+                    query_text=question,
+                    query_type=stype,
+                    system_prompt=EXERCISE_QA_SYSTEM_PROMPT,
+                )
+            except Exception as _e:
+                err = str(_e)
+                if "Triplet_text" in err or "TRIPLET_COMPLETION" in err or "create_triplet_embeddings" in err:
+                    raise RuntimeError(
+                        "The triplet vector index is missing. "
+                        "Please re-ingest the exercise data so triplet embeddings are rebuilt."
+                    ) from _e
+                raise
 
         answer  = _answer_to_str(raw) or "(No answer returned from Cognee.)"
         triples = await ctx_retriever.get_triples(question)
