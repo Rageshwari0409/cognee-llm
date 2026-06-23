@@ -476,6 +476,10 @@ def _get_api_key() -> str:
     return key.strip()
 
 
+# Path to the pre-built graph HTML committed in the repo (resolved relative to app.py)
+_KG_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".artifacts", "exercises_graph.html")
+
+
 # ── KNOWLEDGE GRAPH PAGE ──────────────────────────────────────────────────────
 def render_knowledge_graph(username: str):
     st.markdown(
@@ -492,23 +496,26 @@ def render_knowledge_graph(username: str):
     )
     import streamlit.components.v1 as components
 
-    # ── Guard: Cognee not installed ───────────────────────────────────────
-    if not COGNEE_AVAILABLE:
-        st.error(
-            "**Cognee is not available in this Python environment.**\n\n"
-            f"Import error: `{_COG_ERR}`\n\n"
-            "Activate the cognee-2 conda env and restart Streamlit:\n"
-            "```\nconda activate cognee-2\nstreamlit run app.py\n```"
-        )
-        return  # nothing else to show
-
-    # ── Auto-load pre-built graph from committed file (no API key, no Neo4j call) ──
+    # ── Auto-load pre-built graph directly from disk (no Cognee / API key needed) ──
     if not st.session_state.get("cognee_full_graph_html"):
-        prebuilt = _cog.get_prebuilt_graph_html()
-        if prebuilt:
-            st.session_state["cognee_full_graph_html"] = prebuilt
-            st.session_state["cognee_data_ready"] = True
-            _cognee_server_state()["ready"] = True
+        if os.path.exists(_KG_HTML_PATH):
+            try:
+                with open(_KG_HTML_PATH, "r", encoding="utf-8") as _f:
+                    _html = _f.read()
+            except UnicodeDecodeError:
+                with open(_KG_HTML_PATH, "r", encoding="cp1252", errors="replace") as _f:
+                    _html = _f.read()
+            if _html:
+                st.session_state["cognee_full_graph_html"] = _html
+                st.session_state["cognee_data_ready"] = True
+                if COGNEE_AVAILABLE:
+                    _cognee_server_state()["ready"] = True
+        elif COGNEE_AVAILABLE:
+            prebuilt = _cog.get_prebuilt_graph_html()
+            if prebuilt:
+                st.session_state["cognee_full_graph_html"] = prebuilt
+                st.session_state["cognee_data_ready"] = True
+                _cognee_server_state()["ready"] = True
 
     full_html = st.session_state.get("cognee_full_graph_html", "")
     data_ready = bool(full_html)
@@ -529,7 +536,14 @@ def render_knowledge_graph(username: str):
 
     st.markdown("---")
 
-    # ── Q&A requires API key for Cognee search ────────────────────────────
+    # ── Q&A requires Cognee + API key ─────────────────────────────────────
+    if not COGNEE_AVAILABLE:
+        st.info(
+            "**Live Q&A is not available** — Cognee is not installed in this environment.\n\n"
+            f"Import error: `{_COG_ERR}`"
+        )
+        return
+
     api_key = _get_api_key()
     if not api_key:
         st.warning(
