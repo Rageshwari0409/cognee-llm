@@ -1,8 +1,11 @@
 .mem-venv
-.pkl
-__pycache__
-.pyc
-node_modules
+*.pkl
+__pycache__/
+*.pyc
+node_modules/
 .env
-.vscode
+.vscode/
+.cognee_system/
+.cognee_data/
+.artifacts/
 

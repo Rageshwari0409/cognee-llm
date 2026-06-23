@@ -513,28 +513,40 @@ def render_knowledge_graph(username: str):
 
     # ── 1. Auto-ingest from bundled 'exercises_500_transformed.json' (runs exactly once) ────────
     if st.session_state["cognee_data_ready"] is None:
-        with st.spinner("Checking Neo4j for existing exercise data…"):
-            try:
-                has_data = _cog.data_exists_in_cognee(api_key)
-            except Exception as exc:
-                st.error(f"Could not reach Neo4j: {exc}")
-                has_data = False
+        server_state = _cognee_server_state()
 
-        if has_data:
+        if server_state["ready"] is True:
+            # Already confirmed ready in this server process — skip Neo4j round-trip
             st.session_state["cognee_data_ready"] = True
+        elif server_state["ready"] is False:
+            st.session_state["cognee_data_ready"] = False
         else:
-            with st.spinner(
-                "First-time setup: ingesting exercises from `exercises_500_transformed.json` into "
-                "Neo4j + LanceDB… (3–8 minutes)"
-            ):
+            # First check in this server process — hit Neo4j once
+            with st.spinner("Checking Neo4j for existing exercise data…"):
                 try:
-                    _cog.auto_ingest_if_needed(api_key)
-                    st.session_state["cognee_data_ready"] = True
-                    st.session_state["cognee_full_graph_html"] = ""
-                    st.rerun()
+                    has_data = _cog.data_exists_in_cognee(api_key)
                 except Exception as exc:
-                    st.error(f"Auto-ingestion failed: {exc}")
-                    st.session_state["cognee_data_ready"] = False
+                    st.error(f"Could not reach Neo4j: {exc}")
+                    has_data = False
+
+            if has_data:
+                server_state["ready"] = True
+                st.session_state["cognee_data_ready"] = True
+            else:
+                with st.spinner(
+                    "First-time setup: ingesting exercises from `exercises_500_transformed.json` into "
+                    "Neo4j + LanceDB… (3–8 minutes)"
+                ):
+                    try:
+                        _cog.auto_ingest_if_needed(api_key)
+                        server_state["ready"] = True
+                        st.session_state["cognee_data_ready"] = True
+                        st.session_state["cognee_full_graph_html"] = ""
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Auto-ingestion failed: {exc}")
+                        server_state["ready"] = False
+                        st.session_state["cognee_data_ready"] = False
 
     data_ready = st.session_state["cognee_data_ready"]
 
@@ -570,6 +582,7 @@ def render_knowledge_graph(username: str):
             ):
                 try:
                     _cog.auto_ingest_if_needed(api_key)
+                    _cognee_server_state()["ready"] = True
                     st.session_state["cognee_data_ready"] = True
                 except Exception as exc:
                     st.error(f"Auto-ingestion failed: {exc}")
@@ -985,6 +998,16 @@ def preload_models_once():
     except Exception as e:
         print(f"Background pre-load failed: {e}")
         return False
+
+
+@st.cache_resource(show_spinner=False)
+def _cognee_server_state() -> dict:
+    """
+    Mutable dict cached at the server process level — shared across all user sessions.
+    Prevents re-ingestion on every relogin when data already exists in Neo4j/LanceDB.
+    Keys: ready (None=unchecked, True=ready, False=failed)
+    """
+    return {"ready": None}
 
 if __name__ == "__main__":
     preload_models_once()
