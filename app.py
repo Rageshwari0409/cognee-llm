@@ -502,116 +502,41 @@ def render_knowledge_graph(username: str):
         )
         return  # nothing else to show
 
-    api_key = _get_api_key()
-    if not api_key:
-        st.warning(
-            "No Gemini API key found. "
-            "Enter it in the **API Configuration** panel in the sidebar, "
-            "or set the `GEMINI_API_KEY` environment variable."
-        )
-        return
-
-    # ── 1. Auto-ingest from bundled 'exercises_500_transformed.json' (runs exactly once) ────────
-    if st.session_state["cognee_data_ready"] is None:
-        server_state = _cognee_server_state()
-
-        if server_state["ready"] is True:
-            # Already confirmed ready in this server process — skip Neo4j round-trip
+    # ── Auto-load pre-built graph from committed file (no API key, no Neo4j call) ──
+    if not st.session_state.get("cognee_full_graph_html"):
+        prebuilt = _cog.get_prebuilt_graph_html()
+        if prebuilt:
+            st.session_state["cognee_full_graph_html"] = prebuilt
             st.session_state["cognee_data_ready"] = True
-        elif server_state["ready"] is False:
-            st.session_state["cognee_data_ready"] = False
-        else:
-            # First check in this server process — hit Neo4j once
-            with st.spinner("Checking Neo4j for existing exercise data…"):
-                try:
-                    has_data = _cog.data_exists_in_cognee(api_key)
-                except Exception as exc:
-                    st.error(f"Could not reach Neo4j: {exc}")
-                    has_data = False
+            _cognee_server_state()["ready"] = True
 
-            if has_data:
-                server_state["ready"] = True
-                st.session_state["cognee_data_ready"] = True
-            else:
-                with st.spinner(
-                    "First-time setup: ingesting exercises from `exercises_500_transformed.json` into "
-                    "Neo4j + LanceDB… (3–8 minutes)"
-                ):
-                    try:
-                        _cog.auto_ingest_if_needed(api_key)
-                        server_state["ready"] = True
-                        st.session_state["cognee_data_ready"] = True
-                        st.session_state["cognee_full_graph_html"] = ""
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Auto-ingestion failed: {exc}")
-                        server_state["ready"] = False
-                        st.session_state["cognee_data_ready"] = False
-
-    data_ready = st.session_state["cognee_data_ready"]
-
-    # ── Status bar ───────────────────────────────────────────────────────
-    if data_ready:
-        st.success("**Exercise graph is ready.**")
-    else:
-        st.error(
-            " **Ingestion failed.** Check that `exercises_500_transformed.json` is present next to `app.py` "
-            "and that Neo4j / Gemini credentials are set in `.env`."
-        )
-
-    # ── Load Graph button (auto-ingests if needed, then fetches from Neo4j) ─
-    col_b1, _ = st.columns([1.5, 6.5])
-    with col_b1:
-        load_graph_btn = st.button(
-            "Load Graph",
-            key="cog_load_graph_btn",
-            use_container_width=True,
-        )
-
-    if load_graph_btn:
-        with st.spinner("Checking Neo4j for existing exercise data…"):
-            try:
-                has_data = _cog.data_exists_in_cognee(api_key)
-            except Exception as exc:
-                st.error(f"Could not reach Neo4j: {exc}")
-                has_data = False
-
-        if not has_data:
-            with st.spinner(
-                "No data in Neo4j — ingesting `exercises_500_transformed.json` first… (3–8 min)"
-            ):
-                try:
-                    _cog.auto_ingest_if_needed(api_key)
-                    _cognee_server_state()["ready"] = True
-                    st.session_state["cognee_data_ready"] = True
-                except Exception as exc:
-                    st.error(f"Auto-ingestion failed: {exc}")
-                    st.stop()
-
-        with st.spinner("Fetching knowledge graph from Neo4j via Cognee…"):
-            try:
-                html = _cog.load_graph_from_neo4j(api_key)
-                if not html or len(html) < 500:
-                    st.error("Cognee returned an empty graph. Check Neo4j contents.")
-                else:
-                    st.session_state["cognee_full_graph_html"] = html
-                    st.session_state["cognee_data_ready"] = True
-            except Exception as exc:
-                st.error(f"Failed to load graph: {exc}")
-
-    # ── Full graph display ────────────────────────────────────────────────
     full_html = st.session_state.get("cognee_full_graph_html", "")
+    data_ready = bool(full_html)
+
     if full_html:
-        with st.expander("Full Exercise Knowledge Graph ", expanded=True):
+        st.success("**Exercise graph is ready.**")
+        with st.expander("Full Exercise Knowledge Graph", expanded=True):
             st.caption(
                 "Click and drag nodes · scroll to zoom · hover for details. "
                 "Use the search box (top-left of the graph) to highlight nodes by name."
             )
             components.html(full_html, height=700, scrolling=True)
-    elif data_ready:
-        st.info("Click **Load Graph** above to display the interactive exercise knowledge graph.")
+    else:
+        st.error(
+            "Pre-built graph not found. Ensure `.artifacts/exercises_graph.html` "
+            "is present in the repository."
+        )
 
     st.markdown("---")
+
+    # ── Q&A requires API key for Cognee search ────────────────────────────
+    api_key = _get_api_key()
+    if not api_key:
+        st.warning(
+            "Enter your **Gemini API key** in the sidebar API Configuration panel "
+            "to query the knowledge graph."
+        )
+        return
 
     # ── 3. Chat + Context Graph panel ─────────────────────────────────────
     st.markdown(

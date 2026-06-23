@@ -701,6 +701,16 @@ def query_exercise_graph(question: str, api_key: Optional[str] = None) -> dict:
     return run_async(_query())
 
 
+def get_prebuilt_graph_html() -> str:
+    """Read the pre-committed graph HTML from disk. No API key, no Neo4j call."""
+    if not FULL_GRAPH_HTML.exists():
+        return ""
+    try:
+        return FULL_GRAPH_HTML.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return FULL_GRAPH_HTML.read_text(encoding="cp1252", errors="replace")
+
+
 def load_full_graph_html(api_key: Optional[str] = None) -> str:
     """
     Sync: return the full-graph HTML string.
