@@ -45,9 +45,10 @@ _APP_DIR = pathlib.Path(__file__).parent.resolve()
 COGNEE_BASE   = pathlib.Path(os.environ.get("COGNEE_BASE_DIR", str(_APP_DIR))).resolve()
 COGNEE_DATA   = COGNEE_BASE / ".cognee_data"
 COGNEE_SYSTEM = COGNEE_BASE / ".cognee_system"
-ARTIFACTS_DIR = COGNEE_BASE / ".artifacts"
-GRAPHS_DIR    = ARTIFACTS_DIR / "graphs"
+ARTIFACTS_DIR   = COGNEE_BASE / ".artifacts"
+GRAPHS_DIR      = ARTIFACTS_DIR / "graphs"
 FULL_GRAPH_HTML = ARTIFACTS_DIR / "exercises_graph.html"
+INGEST_FLAG     = COGNEE_SYSTEM / "ingestion_complete.flag"
 
 for _d in [COGNEE_DATA, COGNEE_SYSTEM, ARTIFACTS_DIR, GRAPHS_DIR]:
     _d.mkdir(parents=True, exist_ok=True)
@@ -486,14 +487,19 @@ def _triplet_table_exists() -> bool:
 
 def data_exists_in_cognee(api_key: Optional[str] = None) -> bool:
     """
-    True only when BOTH the Neo4j graph contains exercise nodes AND the LanceDB
-    Triplet_text collection exists. The Triplet_text collection is created by
-    add_data_points(embed_triplets=True) during ingest — if it is absent,
-    TRIPLET_COMPLETION searches will fail with NoDataError even when Neo4j has
-    nodes (e.g. after a LanceDB reset or a cross-environment data migration).
+    Returns True when exercise data has been successfully ingested before.
+
+    Short-circuits to True when the disk sentinel flag AND the LanceDB triplet
+    table both exist — this survives server restarts and prevents Neo4j returning
+    an empty result set (e.g. after a Neo4j reset) from triggering re-ingestion.
+    Falls back to a live Neo4j check only on the very first run (no flag yet).
     """
     if not COGNEE_IMPORTABLE:
         return False
+
+    # Fast path: sentinel file written after a completed ingest + LanceDB intact.
+    if INGEST_FLAG.exists() and _triplet_table_exists():
+        return True
 
     # If the triplet collection is missing, always re-ingest regardless of Neo4j state.
     if not _triplet_table_exists():
@@ -636,6 +642,7 @@ def ingest_exercises(api_key: Optional[str] = None,
 
         _ingest_progress["msg"] = "Done."
         _ingest_progress["pct"] = 1.0
+        INGEST_FLAG.touch()
         return f"Successfully ingested {len(nodes)} exercises."
 
     return run_async(_ingest())
