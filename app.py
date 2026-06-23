@@ -958,6 +958,38 @@ def preload_models_once():
 
 
 @st.cache_resource(show_spinner=False)
+def _ensure_cognee_ingested() -> dict:
+    """
+    Runs once per server process (not per user login) via @st.cache_resource.
+    Spawns a background thread to ingest exercise data if LanceDB is empty,
+    so the UI stays responsive while the ingest runs.
+    Returns a shared state dict: {"status": "pending"|"done"|"error"|"skipped", "error": str}
+    """
+    import threading
+    state = {"status": "pending", "error": ""}
+
+    if not COGNEE_AVAILABLE:
+        state["status"] = "skipped"
+        return state
+
+    def _run():
+        try:
+            api_key = (
+                os.environ.get("GEMINI_API_KEY")
+                or os.environ.get("LLM_API_KEY", "")
+            )
+            result = _cog.auto_ingest_if_needed(api_key=api_key or None)
+            state["status"] = "done" if result != "already_ingested" else "skipped"
+        except Exception as e:
+            state["status"] = "error"
+            state["error"] = str(e)
+            print(f"[cognee startup ingest] {e}")
+
+    threading.Thread(target=_run, name="cognee-startup-ingest", daemon=True).start()
+    return state
+
+
+@st.cache_resource(show_spinner=False)
 def _cognee_server_state() -> dict:
     """
     Mutable dict cached at the server process level — shared across all user sessions.
@@ -968,7 +1000,8 @@ def _cognee_server_state() -> dict:
 
 if __name__ == "__main__":
     preload_models_once()
-    
+    _ensure_cognee_ingested()
+
     if not st.session_state["logged_in"]:
         render_auth_page()
     else:
