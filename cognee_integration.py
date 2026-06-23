@@ -480,9 +480,12 @@ def _lance_table_exists() -> bool:
 
 
 def _triplet_table_exists() -> bool:
-    """True iff the LanceDB Triplet_text collection exists (required for TRIPLET_COMPLETION)."""
+    """True iff the LanceDB Triplet_text collection has actual data files (not just an empty stub directory)."""
     triplet_table = COGNEE_SYSTEM / "databases" / "cognee.lancedb" / "Triplet_text.lance"
-    return triplet_table.exists()
+    if not triplet_table.is_dir():
+        return False
+    # A real LanceDB table has .txn data files; an empty stub only has _versions/
+    return any(triplet_table.rglob("*.txn"))
 
 
 def data_exists_in_cognee(api_key: Optional[str] = None) -> bool:
@@ -679,6 +682,12 @@ def query_exercise_graph(question: str, api_key: Optional[str] = None) -> dict:
                 )
             except Exception as _e:
                 err = str(_e)
+                # Surface Neo4j connectivity failures clearly before checking for index issues.
+                if "Cannot resolve address" in err or "ServiceUnavailable" in err or "7687" in err:
+                    raise RuntimeError(
+                        "Cannot reach the Neo4j graph database. "
+                        "Please resume the AuraDB instance at console.neo4j.io and retry."
+                    ) from _e
                 if "Triplet_text" in err or "TRIPLET_COMPLETION" in err or "create_triplet_embeddings" in err:
                     raise RuntimeError(
                         "The triplet vector index is missing. "

@@ -42,6 +42,24 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Inject Neo4j credentials from Streamlit Secrets into os.environ so that
+# cognee_integration.configure_env() picks them up (it reads from os.environ,
+# not st.secrets directly).
+_NEO4J_SECRET_KEYS = [
+    "GRAPH_DATABASE_URL",
+    "GRAPH_DATABASE_USERNAME",
+    "GRAPH_DATABASE_PASSWORD",
+    "GRAPH_DATABASE_NAME",
+    "GRAPH_DATABASE_PROVIDER",
+]
+try:
+    for _k in _NEO4J_SECRET_KEYS:
+        _v = st.secrets.get(_k) or st.secrets.get(_k.lower())
+        if _v:
+            os.environ[_k] = str(_v)
+except Exception:
+    pass
+
 # Inject custom modern CSS
 css_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "styles.css")
 if os.path.exists(css_path):
