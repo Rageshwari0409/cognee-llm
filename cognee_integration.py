@@ -472,13 +472,95 @@ def _answer_to_str(results) -> str:
 # Public synchronous API (for Streamlit)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def data_exists_in_cognee() -> bool:
-    """
-    Fast file-based check: True if exercise data has been ingested into LanceDB.
-    Checks for Exercise_name.lance which is written by the ingestion pipeline.
-    """
+def _lance_table_exists() -> bool:
+    """Local fallback check: True iff the LanceDB exercise table is on disk."""
     lance_table = COGNEE_SYSTEM / "databases" / "cognee.lancedb" / "Exercise_name.lance"
     return lance_table.exists()
+
+
+def data_exists_in_cognee(api_key: Optional[str] = None) -> bool:
+    """
+    True if the configured Neo4j graph already contains exercise data.
+    Queries Neo4j directly so we trust the actual graph state, not a possibly
+    stale local LanceDB folder. Falls back to the local LanceDB file check if
+    Neo4j is unreachable.
+    """
+    if not COGNEE_IMPORTABLE:
+        return False
+
+    async def _check() -> bool:
+        configure_env(api_key)
+        try:
+            await setup()
+            from cognee.infrastructure.databases.graph import get_graph_engine
+            engine = await get_graph_engine()
+            nodes, _edges = await engine.get_graph_data()
+            return bool(nodes)
+        except Exception:
+            return _lance_table_exists()
+
+    try:
+        return run_async(_check())
+    except Exception:
+        return _lance_table_exists()
+
+
+# Path to the bundled exercises JSON file shipped with the app.
+BUNDLED_JSON = _APP_DIR / "exercises_500_transformed.json"
+
+
+def auto_ingest_if_needed(api_key: Optional[str] = None) -> str:
+    """
+    Ingest the bundled 'exercises_500_transformed.json' into Cognee exactly once.
+    If data already exists this is a no-op (returns immediately).
+    Raises FileNotFoundError if the bundled JSON is missing.
+    """
+    if data_exists_in_cognee(api_key):
+        return "already_ingested"
+    if not BUNDLED_JSON.exists():
+        raise FileNotFoundError(
+            f"Bundled exercise JSON not found: {BUNDLED_JSON}\n"
+            "Place 'exercises_500_transformed.json' next to app.py."
+        )
+    return ingest_exercises(api_key, json_path=str(BUNDLED_JSON))
+
+
+def load_graph_from_neo4j(api_key: Optional[str] = None) -> str:
+    """
+    Always pull the latest graph from Neo4j via Cognee's visualize_graph and
+    return the resulting HTML as a UTF-8 string for st.components.html().
+    Reads the file in UTF-8 (cognee's writer can default to cp1252 on Windows)
+    and falls back to the in-memory return value if the file is missing.
+    """
+    if not COGNEE_IMPORTABLE:
+        raise RuntimeError(f"Cognee not importable: {_IMPORT_ERROR}")
+
+    async def _generate():
+        configure_env(api_key)
+        await setup()
+        ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+        # Remove any stale artifact so we know any present file is fresh.
+        try:
+            if FULL_GRAPH_HTML.exists():
+                FULL_GRAPH_HTML.unlink()
+        except Exception:
+            pass
+
+        html = await visualize_graph(str(FULL_GRAPH_HTML))
+
+        if FULL_GRAPH_HTML.exists() and FULL_GRAPH_HTML.stat().st_size > 500:
+            try:
+                return FULL_GRAPH_HTML.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                return FULL_GRAPH_HTML.read_text(encoding="cp1252", errors="replace")
+        if isinstance(html, str) and len(html) > 500:
+            return html
+        raise RuntimeError(
+            "Graph generation returned no data. "
+            "Ensure Neo4j is reachable and the dataset has been ingested."
+        )
+
+    return run_async(_generate())
 
 
 def init_cognee(api_key: Optional[str] = None) -> None:

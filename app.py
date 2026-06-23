@@ -487,336 +487,240 @@ def render_knowledge_graph(username: str):
     st.markdown(
         "<p style='font-size:1.05rem;font-weight:500;color:#475569;"
         "margin-top:4px;margin-bottom:15px;'>"
-        "Visual representation of your cognitive memory structure and the "
-        "Cognee exercise knowledge graph.</p>",
+        "Explore the Cognee exercise knowledge graph.</p>",
         unsafe_allow_html=True,
     )
+    import streamlit.components.v1 as components
 
-    tab_personal, tab_cognee = st.tabs([
-        "🧠 Personal Memory Graph",
-        "🕸️ Exercise Knowledge Graph (Cognee)",
-    ])
+    # ── Guard: Cognee not installed ───────────────────────────────────────
+    if not COGNEE_AVAILABLE:
+        st.error(
+            "**Cognee is not available in this Python environment.**\n\n"
+            f"Import error: `{_COG_ERR}`\n\n"
+            "Activate the cognee-2 conda env and restart Streamlit:\n"
+            "```\nconda activate cognee-2\nstreamlit run app.py\n```"
+        )
+        return  # nothing else to show
 
-    # ── TAB 1: Personal Memory Graph (existing logic — unchanged) ─────────────
-    with tab_personal:
-        try:
-            from pyvis.network import Network
-            import streamlit.components.v1 as components
-            HAS_PYVIS = True
-        except ImportError:
-            HAS_PYVIS = False
+    api_key = _get_api_key()
+    if not api_key:
+        st.warning(
+            "No Gemini API key found. "
+            "Enter it in the **API Configuration** panel in the sidebar, "
+            "or set the `GEMINI_API_KEY` environment variable."
+        )
+        return
 
-        sem = database.get_memories_by_tag(username, "semantic")
-        epi = database.get_memories_by_tag(username, "episodic")
-        pro = database.get_memories_by_tag(username, "procedural")
-
-        if not sem and not epi and not pro:
-            st.info("No memories stored yet. Please register or start a chat session to build your knowledge graph!")
-        elif not HAS_PYVIS:
-            st.warning("The 'pyvis' library is missing. Install it with 'pip install pyvis'. Below is your structured memory index:")
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown("### Semantic Knowledge")
-                for m in sem:
-                    st.info(f"**Q**: {m['query']}\n\n**A**: {m['response']} ({m.get('subtag','implicit').upper()})")
-            with c2:
-                st.markdown("### Episodic Session Logs")
-                for m in epi:
-                    st.success(f"**Q**: {m['query']}\n\n**A**: {m['response']}")
-            with c3:
-                st.markdown("### Procedural Guides")
-                for m in pro:
-                    st.warning(f"**Q**: {m['query']}\n\n**A**: {m['response']}")
-        else:
-            net = Network(height="600px", width="100%", bgcolor="#FFFFFF", font_color="#0F172A")
-            net.force_atlas_2based(gravity=-50, central_gravity=0.01, spring_length=100, spring_strength=0.08, damping=0.4)
-            net.add_node(f"user_{username}", label=f"Athlete: {username}", title="Your Workout Profile Center", color="#2563EB", size=30)
-            if sem:
-                net.add_node("cat_semantic", label="Semantic Memory", title="Concepts, facts, and onboarding data", color="#0284C7", size=22)
-                net.add_edge(f"user_{username}", "cat_semantic", color="#CBD5E1")
-                for m in sem:
-                    sub = m.get("subtag", "implicit")
-                    nt  = f"Type: {sub.upper()}\n\nQuery: {m['query']}\n\nResponse: {m['response']}".replace('"', '\\"')
-                    net.add_node(f"sem_{m['id']}", label=f"Sem: {m['query'][:20]}...", title=nt, color="#7DD3FC", size=15)
-                    net.add_edge("cat_semantic", f"sem_{m['id']}", color="#E2E8F0")
-            if epi:
-                net.add_node("cat_episodic", label="Episodic Memory", title="Personal sessions & workout logs", color="#059669", size=22)
-                net.add_edge(f"user_{username}", "cat_episodic", color="#CBD5E1")
-                for m in epi:
-                    nt = f"Query: {m['query']}\n\nResponse: {m['response']}".replace('"', '\\"')
-                    net.add_node(f"epi_{m['id']}", label=f"Epi: {m['query'][:20]}...", title=nt, color="#A7F3D0", size=15)
-                    net.add_edge("cat_episodic", f"epi_{m['id']}", color="#E2E8F0")
-            if pro:
-                net.add_node("cat_procedural", label="Procedural Memory", title="Exercise instructions & guides", color="#D97706", size=22)
-                net.add_edge(f"user_{username}", "cat_procedural", color="#CBD5E1")
-                for m in pro:
-                    nt = f"Query: {m['query']}\n\nResponse: {m['response']}".replace('"', '\\"')
-                    net.add_node(f"pro_{m['id']}", label=f"Pro: {m['query'][:20]}...", title=nt, color="#FDE68A", size=15)
-                    net.add_edge("cat_procedural", f"pro_{m['id']}", color="#E2E8F0")
-
-            html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowledge_graph.html")
+    # ── 1. Auto-ingest from bundled 'exercises_500_transformed.json' (runs exactly once) ────────
+    if st.session_state["cognee_data_ready"] is None:
+        with st.spinner("Checking Neo4j for existing exercise data…"):
             try:
-                net.write_html(html_path)
-            except AttributeError:
-                net.save_graph(html_path)
+                has_data = _cog.data_exists_in_cognee(api_key)
+            except Exception as exc:
+                st.error(f"Could not reach Neo4j: {exc}")
+                has_data = False
 
-            if os.path.exists(html_path):
-                with open(html_path, "r", encoding="utf-8") as f:
-                    html_content = f.read()
-                components.html(html_content, height=600, scrolling=True)
-            else:
-                st.error("Failed to generate knowledge graph visualisation file.")
-
-    # ── TAB 2: Cognee Exercise Knowledge Graph ────────────────────────────────
-    with tab_cognee:
-        import streamlit.components.v1 as components
-
-        # ── Guard: Cognee not installed ───────────────────────────────────────
-        if not COGNEE_AVAILABLE:
-            st.error(
-                "**Cognee is not available in this Python environment.**\n\n"
-                f"Import error: `{_COG_ERR}`\n\n"
-                "Activate the cognee-2 conda env and restart Streamlit:\n"
-                "```\nconda activate cognee-2\nstreamlit run app.py\n```"
-            )
-            return  # nothing else to show
-
-        api_key = _get_api_key()
-        if not api_key:
-            st.warning(
-                "No Gemini API key found. "
-                "Enter it in the **API Configuration** panel in the sidebar, "
-                "or set the `GEMINI_API_KEY` environment variable."
-            )
-            return
-
-        # ── 1. Data status check ─────────────────────────────────────────────
-        if st.session_state["cognee_data_ready"] is None:
-            st.session_state["cognee_data_ready"] = _cog.data_exists_in_cognee()
-
-        data_ready = st.session_state["cognee_data_ready"]
-
-        # ── Status bar ───────────────────────────────────────────────────────
-        if data_ready:
-            st.success(
-                "✅ **Exercise graph is ready.**  "
-            )
+        if has_data:
+            st.session_state["cognee_data_ready"] = True
         else:
-            st.warning(
-                "⚠️ **Exercise data not found.**  "
-                "Upload your exercises JSON file below to build the knowledge graph."
-            )
-
-        # ── Upload + ingest panel ─────────────────────────────────────────────
-        # When data is not ready: uploader is always visible.
-        # When data is ready: uploader is in a collapsed expander (Re-Ingest).
-        def _run_ingest(uploaded_file):
             with st.spinner(
-                "Ingesting exercises into Neo4j + LanceDB and building graph "
-                "(this takes 3–8 minutes on first run)…"
+                "First-time setup: ingesting exercises from `exercises_500_transformed.json` into "
+                "Neo4j + LanceDB… (3–8 minutes)"
             ):
                 try:
-                    msg = _cog.ingest_exercises(api_key, json_bytes=uploaded_file.getvalue())
-                    st.success(f"✅ {msg}")
-                    st.session_state["cognee_data_ready"]      = True
+                    _cog.auto_ingest_if_needed(api_key)
+                    st.session_state["cognee_data_ready"] = True
                     st.session_state["cognee_full_graph_html"] = ""
                     st.rerun()
                 except Exception as exc:
-                    st.error(f"Ingestion failed: {exc}")
+                    st.error(f"Auto-ingestion failed: {exc}")
+                    st.session_state["cognee_data_ready"] = False
 
-        if not data_ready:
-            uploaded = st.file_uploader(
-                "Upload exercises JSON file",
-                type=["json"],
-                help="Upload your exercises JSON file (e.g. exercises_500_transformed.json). "
-                     "Expected format: a JSON array of exercise objects.",
-                key="cog_json_uploader_new",
+    data_ready = st.session_state["cognee_data_ready"]
+
+    # ── Status bar ───────────────────────────────────────────────────────
+    if data_ready:
+        st.success("✅ **Exercise graph is ready.**")
+    else:
+        st.error(
+            "❌ **Ingestion failed.** Check that `exercises_500_transformed.json` is present next to `app.py` "
+            "and that Neo4j / Gemini credentials are set in `.env`."
+        )
+
+    # ── Load Graph button (auto-ingests if needed, then fetches from Neo4j) ─
+    col_b1, _ = st.columns([1.5, 6.5])
+    with col_b1:
+        load_graph_btn = st.button(
+            "📊 Load Graph",
+            key="cog_load_graph_btn",
+            use_container_width=True,
+        )
+
+    if load_graph_btn:
+        with st.spinner("Checking Neo4j for existing exercise data…"):
+            try:
+                has_data = _cog.data_exists_in_cognee(api_key)
+            except Exception as exc:
+                st.error(f"Could not reach Neo4j: {exc}")
+                has_data = False
+
+        if not has_data:
+            with st.spinner(
+                "No data in Neo4j — ingesting `exercises_500_transformed.json` first… (3–8 min)"
+            ):
+                try:
+                    _cog.auto_ingest_if_needed(api_key)
+                    st.session_state["cognee_data_ready"] = True
+                except Exception as exc:
+                    st.error(f"Auto-ingestion failed: {exc}")
+                    st.stop()
+
+        with st.spinner("Fetching knowledge graph from Neo4j via Cognee…"):
+            try:
+                html = _cog.load_graph_from_neo4j(api_key)
+                if not html or len(html) < 500:
+                    st.error("Cognee returned an empty graph. Check Neo4j contents.")
+                else:
+                    st.session_state["cognee_full_graph_html"] = html
+                    st.session_state["cognee_data_ready"] = True
+            except Exception as exc:
+                st.error(f"Failed to load graph: {exc}")
+
+    # ── Full graph display ────────────────────────────────────────────────
+    full_html = st.session_state.get("cognee_full_graph_html", "")
+    if full_html:
+        with st.expander("🕸️  Full Exercise Knowledge Graph ", expanded=True):
+            st.caption(
+                "Click and drag nodes · scroll to zoom · hover for details. "
+                "Use the search box (top-left of the graph) to highlight nodes by name."
             )
-            if uploaded is not None:
-                st.caption(f"Selected: **{uploaded.name}** ({uploaded.size / 1024:.1f} KB)")
-                if st.button("🚀 Start Ingestion", key="cog_ingest_btn", use_container_width=False):
-                    _run_ingest(uploaded)
+            components.html(full_html, height=700, scrolling=True)
+    elif data_ready:
+        st.info("Click **Load Graph** above to display the interactive exercise knowledge graph.")
+
+    st.markdown("---")
+
+    # ── 3. Chat + Context Graph panel ─────────────────────────────────────
+    st.markdown(
+        "<h3 style='color:#0F172A;margin-bottom:4px;'>💬 Query the Exercise Knowledge Graph</h3>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Ask any fitness question. The right panel shows the knowledge-graph triplets "
+        "Cognee retrieved to ground the answer."
+    )
+
+    col_chat, col_ctx = st.columns([1, 1], gap="medium")
+
+    with col_chat:
+        st.markdown("**Ask a question**")
+        question = st.text_input(
+            "Exercise question",
+            placeholder="e.g. What muscles do sit-ups target?",
+            label_visibility="collapsed",
+            key="cognee_question_input",
+            disabled=not data_ready,
+        )
+        ask_btn = st.button(
+            "Ask ➤",
+            key="cognee_ask_btn",
+            disabled=not data_ready or not question.strip(),
+            use_container_width=False,
+        )
+
+        # Example chips
+        st.caption("Try an example:")
+        examples = [
+            "What muscles do sit-ups target?",
+            "Tell me instructions for a proper squat",
+            "I have a knee injury — what upper-body exercises are safe?",
+            "What exercise categories exist in this dataset?",
+            "Suggest a beginner ab exercise with no equipment",
+        ]
+        for ex in examples:
+            if st.button(ex, key=f"cog_ex_{ex[:20]}", use_container_width=True):
+                st.session_state["cognee_prefill"] = ex
+                st.rerun()
+
+        # Handle prefill from example buttons
+        if "cognee_prefill" in st.session_state and st.session_state["cognee_prefill"]:
+            question = st.session_state.pop("cognee_prefill")
+            ask_btn  = True   # treat as if Ask was clicked
+
+    with col_ctx:
+        st.markdown("**🔍 Context Subgraph**")
+        st.caption("Triplets retrieved from the knowledge graph to answer your question. Blue = source · Green = target.")
+        ctx_placeholder = st.empty()
+
+    # Process query — render inline in the SAME script run.
+    # Calling st.rerun() here would block ~60s on Cognee; by the time it
+    # fires, the Streamlit WebSocket has often already dropped and the
+    # client never sees the answer.
+    if ask_btn and question.strip() and data_ready:
+        with st.spinner("Querying exercise knowledge graph…"):
+            try:
+                result = _cog.query_exercise_graph(question.strip(), api_key)
+                st.session_state["cognee_last_result"] = result
+                st.session_state["cognee_chat_history"].append(
+                    (question.strip(), result)
+                )
+            except Exception as exc:
+                st.error(f"Query failed: {exc}")
+
+    # Render last result
+    last = st.session_state.get("cognee_last_result", {})
+    if last:
+        with col_chat:
+            st.markdown("**Answer**")
+            st.markdown(
+                f"<div style='background:#F0F9FF;border-left:4px solid #0284C7;"
+                f"padding:12px 14px;border-radius:6px;margin-top:6px;font-size:0.95rem;'>"
+                f"{last['answer']}</div>",
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                f"Scope: **{last.get('scope','')}** → `{last.get('search_type','')}` "
+                f"| Tokens: {last.get('total_tokens', 0)} "
+                f"| Graph triplets: {len(last.get('triples', []))}"
+            )
+
+        triples = last.get("triples", [])
+        if triples:
+            ctx_html = _cog.triples_to_html(triples, height=400)
+            with ctx_placeholder:
+                components.html(ctx_html, height=450, scrolling=False)
         else:
-            with st.expander("🔄 Re-Ingest with a new JSON file", expanded=False):
-                uploaded_ri = st.file_uploader(
-                    "Replace exercise data",
-                    type=["json"],
-                    help="Upload a new exercises JSON to replace the current graph data.",
-                    key="cog_json_uploader_reingest",
-                )
-                if uploaded_ri is not None:
-                    st.caption(f"Selected: **{uploaded_ri.name}** ({uploaded_ri.size / 1024:.1f} KB)")
-                    if st.button("🔄 Re-Ingest", key="cog_reingest_btn", use_container_width=False):
-                        _run_ingest(uploaded_ri)
-
-        # ── Graph action buttons ───────────────────────────────────────────────
-        col_b1, col_b2, _ = st.columns([1.5, 1.5, 5])
-        with col_b1:
-            load_graph_btn = st.button(
-                "📊 Load Full Graph",
-                key="cog_load_graph_btn",
-                disabled=not data_ready,
-                use_container_width=True,
-            )
-        with col_b2:
-            regen_graph_btn = st.button(
-                "🔃 Regenerate Graph",
-                key="cog_regen_graph_btn",
-                disabled=not data_ready,
-                use_container_width=True,
-            )
-
-        # ── Load / regenerate full graph ──────────────────────────────────────
-        if load_graph_btn:
-            with st.spinner("Loading full knowledge graph…"):
-                try:
-                    st.session_state["cognee_full_graph_html"] = _cog.load_full_graph_html(api_key)
-                except Exception as exc:
-                    st.error(f"Failed to load graph: {exc}")
-
-        if regen_graph_btn:
-            with st.spinner("Regenerating full knowledge graph from Cognee…"):
-                try:
-                    st.session_state["cognee_full_graph_html"] = _cog.regenerate_full_graph_html(api_key)
-                    st.success("Graph regenerated.")
-                except Exception as exc:
-                    st.error(f"Regeneration failed: {exc}")
-
-        # ── Full graph display ────────────────────────────────────────────────
-        full_html = st.session_state.get("cognee_full_graph_html", "")
-        if full_html:
-            with st.expander("🕸️  Full Exercise Knowledge Graph ", expanded=True):
-                st.caption(
-                    "Click and drag nodes · scroll to zoom · hover for details. "
-                    "Use the search box (top-left of the graph) to highlight nodes by name."
-                )
-                components.html(full_html, height=700, scrolling=False)
-        elif data_ready:
-            st.info("Click **Load Full Graph** above to display the interactive exercise knowledge graph.")
-
-        st.markdown("---")
-
-        # ── 3. Chat + Context Graph panel ─────────────────────────────────────
-        st.markdown(
-            "<h3 style='color:#0F172A;margin-bottom:4px;'>💬 Query the Exercise Knowledge Graph</h3>",
+            ctx_placeholder.info("No graph context retrieved for this query.")
+    else:
+        ctx_placeholder.markdown(
+            "<div style='display:flex;align-items:center;justify-content:center;"
+            "height:300px;color:#aaa;font-size:14px;border:2px dashed #e0e0e0;border-radius:8px;'>"
+            "Context graph will appear here after you ask a question.</div>",
             unsafe_allow_html=True,
         )
-        st.caption(
-            "Ask any fitness question. The right panel shows the knowledge-graph triplets "
-            "Cognee retrieved to ground the answer."
-        )
 
-        col_chat, col_ctx = st.columns([1, 1], gap="medium")
-
-        with col_chat:
-            st.markdown("**Ask a question**")
-            question = st.text_input(
-                "Exercise question",
-                placeholder="e.g. What muscles do sit-ups target?",
-                label_visibility="collapsed",
-                key="cognee_question_input",
-                disabled=not data_ready,
-            )
-            ask_btn = st.button(
-                "Ask ➤",
-                key="cognee_ask_btn",
-                disabled=not data_ready or not question.strip(),
-                use_container_width=False,
-            )
-
-            # Example chips
-            st.caption("Try an example:")
-            examples = [
-                "What muscles do sit-ups target?",
-                "Tell me instructions for a proper squat",
-                "I have a knee injury — what upper-body exercises are safe?",
-                "What exercise categories exist in this dataset?",
-                "Suggest a beginner ab exercise with no equipment",
-            ]
-            for ex in examples:
-                if st.button(ex, key=f"cog_ex_{ex[:20]}", use_container_width=True):
-                    st.session_state["cognee_prefill"] = ex
-                    st.rerun()
-
-            # Handle prefill from example buttons
-            if "cognee_prefill" in st.session_state and st.session_state["cognee_prefill"]:
-                question = st.session_state.pop("cognee_prefill")
-                ask_btn  = True   # treat as if Ask was clicked
-
-        with col_ctx:
-            st.markdown("**🔍 Context Subgraph**")
-            st.caption("Triplets retrieved from the knowledge graph to answer your question. Blue = source · Green = target.")
-            ctx_placeholder = st.empty()
-
-        # Process query — render inline in the SAME script run.
-        # Calling st.rerun() here would block ~60s on Cognee; by the time it
-        # fires, the Streamlit WebSocket has often already dropped and the
-        # client never sees the answer.
-        if ask_btn and question.strip() and data_ready:
-            with st.spinner("Querying exercise knowledge graph…"):
-                try:
-                    result = _cog.query_exercise_graph(question.strip(), api_key)
-                    st.session_state["cognee_last_result"] = result
-                    st.session_state["cognee_chat_history"].append(
-                        (question.strip(), result)
-                    )
-                except Exception as exc:
-                    st.error(f"Query failed: {exc}")
-
-        # Render last result
-        last = st.session_state.get("cognee_last_result", {})
-        if last:
-            with col_chat:
-                st.markdown("**Answer**")
+    # ── 4. Chat history (collapsible) ─────────────────────────────────────
+    history = st.session_state.get("cognee_chat_history", [])
+    if len(history) > 1:
+        with st.expander(f"📜 Chat History ({len(history)} questions)", expanded=False):
+            for i, (q, r) in enumerate(reversed(history)):
+                st.markdown(f"**Q{len(history)-i}:** {q}")
                 st.markdown(
-                    f"<div style='background:#F0F9FF;border-left:4px solid #0284C7;"
-                    f"padding:12px 14px;border-radius:6px;margin-top:6px;font-size:0.95rem;'>"
-                    f"{last['answer']}</div>",
+                    f"<div style='background:#F8FAFC;border:1px solid #E2E8F0;"
+                    f"padding:8px 12px;border-radius:6px;margin-bottom:8px;font-size:0.9rem;'>"
+                    f"{r['answer'][:300]}{'…' if len(r['answer'])>300 else ''}</div>",
                     unsafe_allow_html=True,
                 )
                 st.caption(
-                    f"Scope: **{last.get('scope','')}** → `{last.get('search_type','')}` "
-                    f"| Tokens: {last.get('total_tokens', 0)} "
-                    f"| Graph triplets: {len(last.get('triples', []))}"
+                    f"Scope: {r.get('scope','')} | Search: {r.get('search_type','')} | "
+                    f"Tokens: {r.get('total_tokens',0)} | Triplets: {len(r.get('triples',[]))}"
                 )
 
-            triples = last.get("triples", [])
-            if triples:
-                ctx_html = _cog.triples_to_html(triples, height=400)
-                with ctx_placeholder:
-                    components.html(ctx_html, height=450, scrolling=False)
-            else:
-                ctx_placeholder.info("No graph context retrieved for this query.")
-        else:
-            ctx_placeholder.markdown(
-                "<div style='display:flex;align-items:center;justify-content:center;"
-                "height:300px;color:#aaa;font-size:14px;border:2px dashed #e0e0e0;border-radius:8px;'>"
-                "Context graph will appear here after you ask a question.</div>",
-                unsafe_allow_html=True,
-            )
-
-        # ── 4. Chat history (collapsible) ─────────────────────────────────────
-        history = st.session_state.get("cognee_chat_history", [])
-        if len(history) > 1:
-            with st.expander(f"📜 Chat History ({len(history)} questions)", expanded=False):
-                for i, (q, r) in enumerate(reversed(history)):
-                    st.markdown(f"**Q{len(history)-i}:** {q}")
-                    st.markdown(
-                        f"<div style='background:#F8FAFC;border:1px solid #E2E8F0;"
-                        f"padding:8px 12px;border-radius:6px;margin-bottom:8px;font-size:0.9rem;'>"
-                        f"{r['answer'][:300]}{'…' if len(r['answer'])>300 else ''}</div>",
-                        unsafe_allow_html=True,
-                    )
-                    st.caption(
-                        f"Scope: {r.get('scope','')} | Search: {r.get('search_type','')} | "
-                        f"Tokens: {r.get('total_tokens',0)} | Triplets: {len(r.get('triples',[]))}"
-                    )
-
-        if history:
-            if st.button("🗑️ Clear Cognee Chat History", key="cog_clear_history"):
-                st.session_state["cognee_chat_history"] = []
-                st.session_state["cognee_last_result"]  = {}
-                st.rerun()
+    if history:
+        if st.button("🗑️ Clear Cognee Chat History", key="cog_clear_history"):
+            st.session_state["cognee_chat_history"] = []
+            st.session_state["cognee_last_result"]  = {}
+            st.rerun()
 
 
 # ── SYSTEM DIAGNOSTICS PAGE ──
