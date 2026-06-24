@@ -10,7 +10,7 @@ if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
 import auth
-import database_chromadb as database
+import database_chroma_new as database
 import llm
 
 def run_tests():
@@ -35,12 +35,14 @@ def run_tests():
     conn.commit()
     conn.close()
 
-    # Clean up previous test memories
-    conn = sqlite3.connect(database.DB_PATH)
-    c = conn.cursor()
-    c.execute("DELETE FROM memories WHERE username = ?", (test_user,))
-    conn.commit()
-    conn.close()
+    # Clean up previous test memories in ChromaDB
+    collection = database._get_chroma_collection()
+    if collection is not None:
+        try:
+            collection.delete(where={"username": test_user})
+        except Exception as e:
+            print("ChromaDB test cleanup warning:", e)
+
 
     # Register
     success, msg = auth.register_user(test_user, test_pass)
@@ -134,6 +136,11 @@ def run_tests():
         print(f"     * {tag}: {items}")
         for item in items:
             database.save_memory(test_user, tag, "I have knee pain during leg workouts.", item, subtag="implicit")
+            
+    # Test Without Memory mode (should work without error)
+    result_no_mem = llm.generate_coach_response("I have knee pain during leg workouts.", test_user, use_memory=False)
+    print(f" - (Without Memory) Response Preview: {result_no_mem['response'][:120]}...")
+    assert result_no_mem is not None, "Failed to run coach response in Without Memory mode"
             
     print(" -> Coach Simulator and Memory Extraction PASSED.")
 

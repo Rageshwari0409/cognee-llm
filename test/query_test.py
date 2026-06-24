@@ -1,6 +1,5 @@
 import os
 import sys
-import sqlite3
 import math
 import numpy as np
 from datetime import datetime
@@ -13,11 +12,11 @@ if parent_dir not in sys.path:
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
-import database_chromadb as database
+import database_chroma_new as database
 
 def debug_query_memories(username, tag, query_text):
     """
-    Performs retrieval analysis by reproducing the search pipeline of database_chromadb
+    Performs retrieval analysis by reproducing the search pipeline of database_chroma_new
     and returning all candidates with their intermediate scores.
     """
     database.init_db()
@@ -25,53 +24,52 @@ def debug_query_memories(username, tag, query_text):
     tag = tag.strip().lower()
     query_text = query_text.strip()
     
-    conn = sqlite3.connect(database.DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT id, query, response, timestamp, embedding, subtag
-        FROM memories
-        WHERE username = ? AND tag = ?
-    """, (username, tag))
-    rows = cursor.fetchall()
-    conn.close()
-    
-    if not rows:
+    collection = database._get_chroma_collection()
+    if collection is None:
+        return [], []
+        
+    try:
+        results = collection.get(
+            where={"$and": [{"username": username}, {"tag": tag}]}
+        )
+    except Exception as e:
+        print("Error fetching from ChromaDB:", e)
+        return [], []
+        
+    if not results or not results["ids"]:
         return [], []
         
     memories = []
-    for r in rows:
+    for idx, str_id in enumerate(results["ids"]):
+        meta = results["metadatas"][idx]
         memories.append({
-            "id": r[0],
-            "query": r[1],
-            "response": r[2],
-            "timestamp": r[3],
-            "embedding": r[4],
-            "subtag": r[5]
+            "id": str_id,
+            "query": meta.get("query", ""),
+            "response": meta.get("response", ""),
+            "timestamp": meta.get("timestamp", ""),
+            "subtag": meta.get("subtag", "implicit")
         })
         
     semantic_scores = {m["id"]: 0.0 for m in memories}
     keyword_scores = {m["id"]: 0.0 for m in memories}
     
     # 1. Fetch semantic cosine similarity from ChromaDB
-    collection = database._get_chroma_collection()
-    if collection is not None:
-        try:
-            database.sync_chroma_with_sqlite(username, tag, collection)
-            embedding_fn = database.get_embedding_function()
-            q_emb = embedding_fn([f"search_query: {query_text}"])[0]
-            results = collection.query(
-                query_embeddings=[q_emb],
-                n_results=len(memories),
-                where={"$and": [{"username": username}, {"tag": tag}]}
-            )
-            if results and "ids" in results and results["ids"]:
-                ids_list = results["ids"][0]
-                distances_list = results["distances"][0] if "distances" in results and results["distances"] else []
-                for idx, str_id in enumerate(ids_list):
-                    mem_id = int(str_id)
-                    dist = distances_list[idx] if idx < len(distances_list) else 0.0
-                    sim = 1.0 - dist
-                    semantic_scores[mem_id] = max(0.0, min(1.0, sim))
+    try:
+        embedding_fn = database.get_embedding_function()
+        q_emb = embedding_fn([f"search_query: {query_text}"])[0]
+        search_results = collection.query(
+            query_embeddings=[q_emb],
+            n_results=len(memories),
+            where={"$and": [{"username": username}, {"tag": tag}]}
+        )
+        if search_results and "ids" in search_results and search_results["ids"]:
+            ids_list = search_results["ids"][0]
+            distances_list = search_results["distances"][0] if "distances" in search_results and search_results["distances"] else []
+            for idx, str_id in enumerate(ids_list):
+                mem_id = str_id
+                dist = distances_list[idx] if idx < len(distances_list) else 0.0
+                sim = 1.0 - dist
+                semantic_scores[mem_id] = max(0.0, min(1.0, sim))
         except Exception as e:
             print("Error during Chroma search:", e)
             
@@ -100,10 +98,8 @@ def debug_query_memories(username, tag, query_text):
             mem_id = memories[idx]["id"]
             keyword_scores[mem_id] = float(score)
             
-        max_score = max(keyword_scores.values()) if keyword_scores else 0.0
-        if max_score > 0:
-            for mem_id in keyword_scores:
-                keyword_scores[mem_id] /= max_score
+        for mem_id in keyword_scores:
+            keyword_scores[mem_id] = math.tanh(keyword_scores[mem_id] / 3.0)
     except Exception as e:
         print("Error during BM25 search:", e)
         
@@ -121,26 +117,48 @@ def debug_query_memories(username, tag, query_text):
             "hybrid_score": hybrid_score
         })
         
-    # Sort hybrid matches descending
-    all_candidates.sort(key=lambda x: x["hybrid_score"], reverse=True)
+    # 3. Interleave Candidates (no pre-filtering threshold)
+    by_semantic = sorted(all_candidates, key=lambda x: x["semantic_score"], reverse=True)
+    by_keyword = sorted(all_candidates, key=lambda x: x["keyword_score"], reverse=True)
     
-    # Split by hybrid relevance threshold
-    passed_hybrid = [c for c in all_candidates if c["hybrid_score"] >= database.HYBRID_THRESHOLD or c["semantic_score"] >= 0.60]
-    failed_hybrid = [c for c in all_candidates if not (c["hybrid_score"] >= database.HYBRID_THRESHOLD or c["semantic_score"] >= 0.60)]
+    candidate_ids = set()
+    top_candidates = []
     
-    # 4. Rerank top 15 hybrid candidates using Cross-Encoder
+    for i in range(max(len(by_semantic), len(by_keyword))):
+        if i < len(by_semantic):
+            c = by_semantic[i]
+            m_id = c["memory"]["id"]
+            if m_id not in candidate_ids:
+                candidate_ids.add(m_id)
+                top_candidates.append(c)
+        if i < len(by_keyword):
+            c = by_keyword[i]
+            m_id = c["memory"]["id"]
+            if m_id not in candidate_ids:
+                candidate_ids.add(m_id)
+                top_candidates.append(c)
+        if len(top_candidates) >= 15:
+            break
+            
+    # Remaining candidates that didn't make the top 15 cut
+    distractors = [c for c in all_candidates if c["memory"]["id"] not in candidate_ids]
+    
+    # 4. Rerank top candidates using Cross-Encoder
     reranker = database.get_reranker_model()
     now = datetime.now()
-    top_passed = passed_hybrid[:15]
     
-    if reranker is not None and len(top_passed) > 0:
+    passed_gate = []
+    failed_gate = []
+    
+    if reranker is not None and len(top_candidates) > 0:
         try:
-            pairs = [(query_text, f"{c['memory']['query']} {c['memory']['response']}") for c in top_passed]
+            pairs = [(query_text, f"{c['memory']['query']} {c['memory']['response']}") for c in top_candidates]
             rerank_scores = reranker.predict(pairs)
             
-            for idx, c in enumerate(top_passed):
+            for idx, c in enumerate(top_candidates):
                 raw_score = float(rerank_scores[idx])
                 rerank_score = 1.0 / (1.0 + math.exp(-raw_score))
+                c["rerank_score"] = rerank_score
                 
                 try:
                     dt = datetime.fromisoformat(c["memory"]["timestamp"])
@@ -155,17 +173,23 @@ def debug_query_memories(username, tag, query_text):
                 metadata_boost = (0.6 * is_explicit) + (0.4 * recency_score)
                 final_score = (0.7 * rerank_score) + (0.3 * metadata_boost)
                 
-                c["rerank_score"] = rerank_score
                 c["recency_score"] = recency_score
                 c["is_explicit"] = is_explicit
                 c["metadata_boost"] = metadata_boost
                 c["final_score"] = final_score
+                
+                # Apply Relevance Gate (Cross-Encoder score must be >= 0.002)
+                if rerank_score >= 0.002:
+                    passed_gate.append(c)
+                else:
+                    failed_gate.append(c)
         except Exception as e:
             print("Error during reranking:", e)
             reranker = None
             
     if reranker is None:
-        for c in top_passed:
+        for c in top_candidates:
+            c["rerank_score"] = 0.0
             try:
                 dt = datetime.fromisoformat(c["memory"]["timestamp"])
                 age_hours = (now - dt).total_seconds() / 3600.0
@@ -179,39 +203,29 @@ def debug_query_memories(username, tag, query_text):
             metadata_boost = (0.6 * is_explicit) + (0.4 * recency_score)
             final_score = (0.7 * c["hybrid_score"]) + (0.3 * metadata_boost)
             
-            c["rerank_score"] = 0.0
             c["recency_score"] = recency_score
             c["is_explicit"] = is_explicit
             c["metadata_boost"] = metadata_boost
             c["final_score"] = final_score
             
-    # Filter by Cross-Encoder threshold
-    top_passed_ce = []
-    failed_ce = []
-    
-    if reranker is not None:
-        for c in top_passed:
-            if c.get("rerank_score", 0.0) >= 0.30 or c.get("keyword_score", 0.0) >= 0.30:
-                top_passed_ce.append(c)
+            # Apply Relevance Gate for fallback (Hybrid score >= 0.25 or Semantic Cosine Similarity >= 0.55)
+            if c["hybrid_score"] >= 0.25 or c["semantic_score"] >= 0.55:
+                passed_gate.append(c)
             else:
-                failed_ce.append(c)
-    else:
-        top_passed_ce = top_passed
-        
-    # Sort top_passed_ce by final_score descending
-    top_passed_ce.sort(key=lambda x: x["final_score"], reverse=True)
-    
-    # Keep remaining elements that didn't make top 15 cut
-    other_passed = passed_hybrid[15:]
-    for c in other_passed:
+                failed_gate.append(c)
+                
+    for c in distractors:
         c["rerank_score"] = 0.0
         c["recency_score"] = 0.0
         c["is_explicit"] = 0.0
         c["metadata_boost"] = 0.0
         c["final_score"] = c["hybrid_score"]
         
-    final_passed = top_passed_ce + other_passed
-    final_failed = failed_hybrid + failed_ce
+    passed_gate.sort(key=lambda x: x["final_score"], reverse=True)
+    
+    final_passed = passed_gate
+    final_failed = failed_gate + distractors
+    final_failed.sort(key=lambda x: x["final_score"], reverse=True)
     return final_passed, final_failed
 
 def run_debug_search(username, tag, query):
@@ -222,7 +236,7 @@ def run_debug_search(username, tag, query):
     print(f"👤 User: {username} | Tag: {tag.upper()}")
     print(f"======================================================================")
     
-    print(f"\n🟢 PASSED RELEVANCE THRESHOLD (hybrid >= {database.HYBRID_THRESHOLD} or semantic >= 0.60) - {len(passed)} matches found:")
+    print(f"\n🟢 PASSED RELEVANCE GATE (CE >= 0.002; fallback hybrid >= 0.25 or semantic >= 0.55) - {len(passed)} matches found:")
     if not passed:
         print("  (No memories matched your query above the relevance threshold)")
     for idx, c in enumerate(passed):
@@ -233,7 +247,7 @@ def run_debug_search(username, tag, query):
         print(f"  Score Breakdown:")
         print(f"  ├─ Semantic Score (Cosine):   {c['semantic_score']:.4f}  (Weight: 70%)")
         print(f"  ├─ Lexical Score (BM25):      {c['keyword_score']:.4f}  (Weight: 30%)")
-        print(f"  ├─ Hybrid Score (Combined):   {c['hybrid_score']:.4f}  (Threshold: >= {database.HYBRID_THRESHOLD} or Semantic >= 0.60) -> PASSED")
+        print(f"  ├─ Hybrid Score (Combined):   {c['hybrid_score']:.4f}  (Threshold: >= 0.25 or Semantic >= 0.55) -> PASSED")
         if "final_score" in c:
             print(f"  ├─ Cross-Encoder Rerank:      {c.get('rerank_score', 0.0):.4f}  (Weight: 70%)")
             print(f"  ├─ Metadata Boost (Combined): {c.get('metadata_boost', 0.0):.4f}  (Weight: 30%)")
@@ -244,7 +258,7 @@ def run_debug_search(username, tag, query):
             print(f"  └─ Final Score (Hybrid):      {c['hybrid_score']:.4f}")
             
     print(f"\n----------------------------------------------------------------------")
-    print(f"🔴 FILTERED OUT / IRRELEVANT (hybrid < {database.HYBRID_THRESHOLD} and semantic < 0.60, or CE/keyword < 0.30) - showing top 5 closest distractors:")
+    print(f"🔴 FILTERED OUT / IRRELEVANT (CE < 0.002; fallback hybrid < 0.25 and semantic < 0.55) - showing top 5 closest distractors:")
     if not failed:
         print("  (No memories failed the relevance threshold)")
     for idx, c in enumerate(failed[:5]):
@@ -257,10 +271,10 @@ def run_debug_search(username, tag, query):
         print(f"  ├─ Lexical Score (BM25):      {c['keyword_score']:.4f}")
         print(f"  ├─ Hybrid Score (Combined):   {c['hybrid_score']:.4f}")
         if "final_score" in c:
-            print(f"  ├─ Cross-Encoder Rerank:      {c.get('rerank_score', 0.0):.4f}  (RERANK & Keyword < 0.30) -> FAILED")
+            print(f"  ├─ Cross-Encoder Rerank:      {c.get('rerank_score', 0.0):.4f} -> FAILED")
             print(f"  └─ Final Reranked Score:      {c['final_score']:.4f}")
         else:
-            print(f"  └─ Hybrid Score (Combined):   {c['hybrid_score']:.4f}  (Threshold: >= {database.HYBRID_THRESHOLD} or Semantic >= 0.60) -> FAILED")
+            print(f"  └─ Hybrid Score (Combined):   {c['hybrid_score']:.4f} -> FAILED")
 
 def interactive_search():
     print("==================================================")
@@ -272,11 +286,16 @@ def interactive_search():
     print(f"Total records in DB: {status['total_records']}")
     print(f"Active users: {status['active_users']}")
     
-    conn = sqlite3.connect(database.DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT username FROM memories")
-    users = [row[0] for row in cursor.fetchall()]
-    conn.close()
+    collection = database._get_chroma_collection()
+    users = []
+    if collection is not None:
+        try:
+            results = collection.get()
+            if results and "metadatas" in results and results["metadatas"]:
+                users = list(set(meta.get("username") for meta in results["metadatas"] if meta.get("username")))
+        except Exception as e:
+            print("Error listing users from ChromaDB:", e)
+
     
     if not users:
         print("\n❌ No memories found in database! Please populate the database or run evaluations first.")

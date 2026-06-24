@@ -173,6 +173,16 @@ def configure_env(api_key: Optional[str] = None) -> None:
         config.set_embedding_model("gemini/gemini-embedding-001")
         config.set_embedding_api_key(key)
         config.set_embedding_dimensions(768)
+        # get_graph_config() is also @lru_cache — env var changes above won't reach an
+        # already-cached GraphConfig instance. Mutate it directly so Neo4j credentials
+        # are always up-to-date before setup() initialises the connection pool.
+        config.set_graph_db_config({
+            "graph_database_provider": os.environ.get("GRAPH_DATABASE_PROVIDER", "neo4j"),
+            "graph_database_url":      os.environ.get("GRAPH_DATABASE_URL", ""),
+            "graph_database_username": os.environ.get("GRAPH_DATABASE_USERNAME", "neo4j"),
+            "graph_database_password": os.environ.get("GRAPH_DATABASE_PASSWORD", ""),
+            "graph_database_name":     os.environ.get("GRAPH_DATABASE_NAME", "neo4j"),
+        })
 
 
 # ══════════════════════════════════════════════════════════════════════════════

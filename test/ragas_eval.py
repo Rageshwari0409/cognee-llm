@@ -13,7 +13,7 @@ if parent_dir not in sys.path:
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
-import database_chromadb as database
+import database_chroma_new as database
 import llm
 
 # Check if required libraries are installed
@@ -67,11 +67,12 @@ def run_ragas_evaluation():
     
     # 2. Seed Database
     print("\n1. Seeding evaluation database with 50 memories...")
-    conn = sqlite3.connect(database.DB_PATH)
-    c = conn.cursor()
-    c.execute("DELETE FROM memories WHERE username = ?", (test_user,))
-    conn.commit()
-    conn.close()
+    collection = database._get_chroma_collection()
+    if collection is not None:
+        try:
+            collection.delete(where={"username": test_user})
+        except Exception as e:
+            print("ChromaDB test cleanup warning:", e)
 
     now = datetime.now()
     for idx, mem in enumerate(TEST_MEMORIES):
@@ -79,7 +80,7 @@ def run_ragas_evaluation():
         timestamp = (now - timedelta(hours=hours_ago)).isoformat()
         database.save_memory(
             username=test_user,
-            tag="semantic",
+            tag=mem["tag"],
             query=mem["q"],
             response=mem["r"],
             subtag=mem["subtag"],
@@ -112,9 +113,10 @@ def run_ragas_evaluation():
     for idx, q_case in enumerate(queries_to_eval):
         query_text = q_case["query"]
         target_id = q_case["target_id"]
+        tag = q_case["tag"]
         
         # A. Retrieve contexts
-        retrieved = database.vector_query_memories(test_user, tag="semantic", query_text=query_text, top_k=3)
+        retrieved = database.vector_query_memories(test_user, tag=tag, query_text=query_text, top_k=3)
         # Context list should be formatted as list of strings
         context_list = [f"Memory: {m['response']}" for m in retrieved]
         
@@ -139,9 +141,9 @@ def run_ragas_evaluation():
     print(f"\nSuccessfully collected {len(dataset)} evaluation samples.")
 
     # 4. Configure Ragas with Gemini Model
-    print("\n3. Configuring Ragas with ChatGoogleGenerativeAI (model: gemini-2.5-flash)...")
+    print("\n3. Configuring Ragas with ChatGoogleGenerativeAI (model: gemini-flash-lite-latest)...")
     evaluator_llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
+        model="gemini-flash-lite-latest",
         api_key=api_key,
         temperature=0.0
     )

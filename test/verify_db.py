@@ -1,10 +1,12 @@
 import sqlite3
 import os
+import sys
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-USERS_DB = os.path.join(BASE_DIR, "users.db")
-MEMORIES_DB = os.path.join(BASE_DIR, "memories.db")
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 
+USERS_DB = os.path.join(BASE_DIR, "users.db")
 
 def verify():
     print("==================================================")
@@ -29,33 +31,37 @@ def verify():
     else:
         print("\n[1] USERS DATABASE: File 'users.db' does not exist yet (no registrations).")
         
-    # 2. Inspect Memories Database
-    if os.path.exists(MEMORIES_DB):
-        conn = sqlite3.connect(MEMORIES_DB)
-        cursor = conn.cursor()
-        try:
-            print("\n[2] MEMORIES DATABASE (memories.db):")
-            
-            # Explicit memories (Onboarding answers)
-            cursor.execute("SELECT username, query, response, timestamp FROM memories WHERE subtag = 'explicit'")
-            explicit_rows = cursor.fetchall()
-            print(f"    - Onboarding (Explicit) Memories: {len(explicit_rows)} records found.")
-            for r in explicit_rows:
-                print(f"       * User: {r[0]} | Question: '{r[1]}' -> Answer: '{r[2]}' ({r[3]})")
+    # 2. Inspect Memories Database in ChromaDB
+    try:
+        import database_chroma_new as database
+        collection = database._get_chroma_collection()
+        if collection is not None:
+            print(f"\n[2] MEMORIES DATABASE (ChromaDB - {database.CHROMA_PATH}):")
+            results = collection.get()
+            if results and "ids" in results and results["ids"]:
+                explicit_rows = []
+                implicit_rows = []
+                for idx, str_id in enumerate(results["ids"]):
+                    meta = results["metadatas"][idx]
+                    row_data = (meta.get("username"), meta.get("query"), meta.get("response"), meta.get("timestamp"), meta.get("tag"))
+                    if meta.get("subtag") == "explicit":
+                        explicit_rows.append(row_data)
+                    else:
+                        implicit_rows.append(row_data)
                 
-            # Implicit memories (Chat logs)
-            cursor.execute("SELECT username, tag, query, response, timestamp FROM memories WHERE subtag = 'implicit'")
-            implicit_rows = cursor.fetchall()
-            print(f"\n    - Chat Context (Implicit) Memories: {len(implicit_rows)} records found.")
-            for r in implicit_rows:
-                print(f"       * User: {r[0]} | Tag: {r[1]} | Prompt: '{r[2]}' -> Memory: '{r[3]}' ({r[4]})")
-                
-        except Exception as e:
-            print(f"Error reading memories.db: {e}")
-        finally:
-            conn.close()
-    else:
-        print("\n[2] MEMORIES DATABASE: File 'memories.db' does not exist yet.")
+                print(f"    - Onboarding/Procedural (Explicit) Memories: {len(explicit_rows)} records found.")
+                for r in explicit_rows:
+                    print(f"       * User: {r[0]} | Tag: {r[4]} | Question: '{r[1]}' -> Answer: '{r[2]}' ({r[3]})")
+                    
+                print(f"\n    - Chat Context (Implicit) Memories: {len(implicit_rows)} records found.")
+                for r in implicit_rows:
+                    print(f"       * User: {r[0]} | Tag: {r[4]} | Prompt: '{r[1]}' -> Memory: '{r[2]}' ({r[3]})")
+            else:
+                print("\n[2] MEMORIES DATABASE: No memories found in ChromaDB.")
+        else:
+            print("\n[2] MEMORIES DATABASE: ChromaDB collection is not active.")
+    except Exception as e:
+        print(f"\n[2] MEMORIES DATABASE: Error reading ChromaDB: {e}")
     
     print("\n==================================================")
 

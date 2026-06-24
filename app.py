@@ -16,11 +16,10 @@ from datetime import datetime
 
 # Import modular components
 import auth
-import database_chromadb as database
+import database_chroma_new as database
 import llm
 
 # ── Cognee exercise knowledge-graph integration (optional) ────────────────────
-# Works only in the cognee-2 conda env. The rest of the app is unaffected when
 # Cognee is absent — the Knowledge Graph page just hides the Cognee tab.
 try:
     import cognee_integration as _cog
@@ -90,6 +89,27 @@ if "cognee_full_graph_html" not in st.session_state:
 if "cognee_chat_history" not in st.session_state:
     st.session_state["cognee_chat_history"] = []   # [(question, answer_meta)]
 
+# Initialize API Configuration from .env file if available
+try:
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip('"').strip("'")
+                    # Automatically load all keys into environment variables
+                    os.environ[k] = v
+                    # Populate session states for Streamlit UI fields
+                    if k == "GEMINI_API_KEY" and "gemini_api_key" not in st.session_state:
+                        st.session_state["gemini_api_key"] = v
+                    elif k == "HF_TOKEN" and "hf_token" not in st.session_state:
+                        st.session_state["hf_token"] = v
+except Exception:
+    pass
+
 # ------------------------------------------------------------
 # AUTHENTICATION PAGE
 # ------------------------------------------------------------
@@ -97,11 +117,19 @@ def render_auth_page():
     st.markdown("<h1 class='landing-title' style='text-align: center; font-size: 2.6rem !important; font-weight: 800 !important; color: #0F172A !important; margin-top: 0.5rem !important; margin-bottom: 0.25rem !important; letter-spacing: -1.0px !important; line-height: 1.15 !important;'>AI Workout Coach</h1>", unsafe_allow_html=True)
     st.markdown("<p class='landing-subtitle' style='text-align: center; font-size: 1.0rem !important; font-weight: 500 !important; color: #475569 !important; margin-bottom: 1.2rem !important; line-height: 1.3 !important;'>Your smart fitness trainer with vector database memory</p>", unsafe_allow_html=True)
     
+    if "tab_reset_key" not in st.session_state:
+        st.session_state["tab_reset_key"] = 0
+        
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         tab_login, tab_register = st.tabs(["Sign In", "Sign Up"])
-        
+
         with tab_login:
+            # Display signup success alert if redirected
+            if "signup_success" in st.session_state and st.session_state["signup_success"]:
+                st.success(st.session_state["signup_success"])
+                st.session_state["signup_success"] = None
+                
             st.subheader("Login to Coach")
             login_user = st.text_input("Username", key="login_username").strip()
             login_pass = st.text_input("Password", type="password", key="login_password")
@@ -110,7 +138,9 @@ def render_auth_page():
                 if not login_user or not login_pass:
                     st.error("Please enter both username and password.")
                 else:
-                    if auth.verify_user(login_user, login_pass):
+                    if not auth.user_exists(login_user):
+                        st.error("User not found. Kindly sign up first.")
+                    elif auth.verify_user(login_user, login_pass):
                         st.session_state["logged_in"] = True
                         st.session_state["username"] = login_user
                         database.warm_up_cache(login_user)
@@ -121,7 +151,7 @@ def render_auth_page():
                         time.sleep(0.5)
                         st.rerun()
                     else:
-                        st.error("Invalid username or password. Please try again.")
+                        st.error("Invalid password. Please try again.")
                         
         with tab_register:
             st.subheader("Create New Account")
@@ -199,6 +229,41 @@ def render_auth_page():
             )
             q10 = st.text_input("10. What is your current height (in cm)?", key="reg_q10").strip()
             q11 = st.text_input("11. What is your current weight (in kg)?", key="reg_q11").strip()
+            q12 = st.selectbox(
+                "12. What is your country?",
+                options=["India", "United States", "United Kingdom", "Canada", "Australia", "Other"],
+                key="reg_q12"
+            )
+            q13 = st.multiselect(
+                "13. Do you have any food food allergies? (Select all that apply)",
+                options=["None", "Peanuts", "Tree nuts", "Soy", "Gluten", "Dairy", "Eggs", "Sesame", "Fish / Shellfish"],
+                default=["None"],
+                key="reg_q13"
+            )
+            q14 = st.multiselect(
+                "14. Do you have any food intolerances? (Select all that apply)",
+                options=["None", "Lactose", "Fructose", "Histamine", "Gluten sensitivity", "Caffeine"],
+                default=["None"],
+                key="reg_q14"
+            )
+            q15 = st.selectbox(
+                "15. What is the maximum time you can dedicate to meal prep?",
+                options=["10 mins", "20 mins", "30 mins", "45 mins", "60+ mins"],
+                index=1,
+                key="reg_q15"
+            )
+            q16 = st.multiselect(
+                "16. Which cuisines do you prefer? (Select all that apply)",
+                options=["Indian", "Mediterranean", "Mexican", "Italian", "Asian", "American", "Middle Eastern"],
+                default=["Indian"],
+                key="reg_q16"
+            )
+            q17 = st.selectbox(
+                "17. What is your typical workout time?",
+                options=["Morning", "Afternoon", "Evening", "Night"],
+                index=2,
+                key="reg_q17"
+            )
             
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("Register", key="reg_btn", use_container_width=True):
@@ -233,8 +298,16 @@ def render_auth_page():
                         database.save_memory(reg_user, "semantic", "What is your diet preference?", q9, subtag="explicit")
                         database.save_memory(reg_user, "semantic", "What is your current height (in cm)?", q10, subtag="explicit")
                         database.save_memory(reg_user, "semantic", "What is your current weight (in kg)?", q11, subtag="explicit")
+                        database.save_memory(reg_user, "semantic", "What is your country?", q12, subtag="explicit")
+                        database.save_memory(reg_user, "semantic", "Do you have any food allergies?", ", ".join(q13), subtag="explicit")
+                        database.save_memory(reg_user, "semantic", "Do you have any food intolerances?", ", ".join(q14), subtag="explicit")
+                        database.save_memory(reg_user, "semantic", "What is the maximum time you can dedicate to meal prep?", q15, subtag="explicit")
+                        database.save_memory(reg_user, "semantic", "Which cuisines do you prefer?", ", ".join(q16), subtag="explicit")
+                        database.save_memory(reg_user, "semantic", "What is your typical workout time?", q17, subtag="explicit")
                         
-                        st.success("Account created successfully! Please sign in using the Sign In tab.")
+                        st.session_state["signup_success"] = "Account created successfully! Kindly login now."
+                        st.session_state["tab_reset_key"] += 1
+                        st.rerun()
                     else:
                         st.error(msg)
 
@@ -276,7 +349,22 @@ def render_main_app():
             
     st.sidebar.markdown("---")
     with st.sidebar.expander("API Configuration"):
-        st.text_input("Gemini API Key", type="password", key="gemini_api_key")
+        # Load API keys from session state if available
+        init_gemini = st.session_state.get("gemini_api_key", "")
+        init_hf = st.session_state.get("hf_token", "")
+        
+        gemini_input = st.text_input("Gemini API Key", type="password", value=init_gemini)
+        if gemini_input:
+            st.session_state["gemini_api_key"] = gemini_input.strip()
+            
+        hf_input = st.text_input("Hugging Face Token (Optional)", type="password", value=init_hf)
+        if hf_input:
+            st.session_state["hf_token"] = hf_input.strip()
+            os.environ["HF_TOKEN"] = hf_input.strip()
+        else:
+            st.session_state["hf_token"] = ""
+            if "HF_TOKEN" in os.environ:
+                del os.environ["HF_TOKEN"]
     
     st.sidebar.markdown("<div class='sidebar-logout-container'>", unsafe_allow_html=True)
     if st.sidebar.button("Sign Out", key="logout_btn", use_container_width=True):
@@ -398,9 +486,8 @@ def render_chat_page(username: str):
         </div>
         """, unsafe_allow_html=True)
         
-        time.sleep(1.2)
-        
-        result = llm.generate_coach_response(last_query, username)
+        use_memory = (st.session_state["memory_mode"] == "Using Memory")
+        result = llm.generate_coach_response(last_query, username, use_memory=use_memory)
         response_text = result["response"]
         extracted_memories = result["memories"]
         
@@ -408,12 +495,20 @@ def render_chat_page(username: str):
         
         st.session_state["messages"].append({"role": "assistant", "text": response_text})
         
-        if st.session_state["memory_mode"] == "Using Memory":
+        if use_memory:
             # Save extracted memories
             for tag, list_of_texts in extracted_memories.items():
-                for text in list_of_texts:
-                    database.save_memory(username, tag, last_query, text, subtag="implicit")
-                    
+                clean_texts = [t.strip() for t in list_of_texts if t.strip()]
+                if clean_texts:
+                    # Unify all items for this tag into a single record per turn
+                    combined_text = " ".join(clean_texts)
+                    if tag in ["semantic", "episodic"]:
+                        # Semantic and episodic are stored as pure sentences (no Q&A/prompt context)
+                        database.save_memory(username, tag, "", combined_text, subtag="implicit")
+                    else:
+                        # Procedural is saved with the user query context
+                        database.save_memory(username, tag, last_query, combined_text, subtag="implicit")
+                        
         st.rerun()
 
 # ── MEMORY DETAIL PAGE ──
@@ -422,13 +517,14 @@ def render_memory_page(username: str, tag: str):
     st.markdown(f"<h1 style='font-size: 2.2rem; font-weight: 800; color: #0F172A; margin-top: 0px; margin-bottom: 5px; line-height: 1.1;'>{tag_capitalized} Memory Database</h1>", unsafe_allow_html=True)
     st.markdown(f"<p style='font-size: 1.05rem; font-weight: 500; color: #475569; margin-top: 4px; margin-bottom: 15px;'>Displaying stored {tag} database entries filtered for user <strong>{username}</strong> in chronological order.</p>", unsafe_allow_html=True)
     
-    # Semantic Memory Filter UX
+    # Memory Filter UX
     subtag_filter = "All"
-    if tag == "semantic":
-        st.markdown("<h4 style='margin-top: 15px; margin-bottom: 8px; font-size: 1.45rem; font-weight: 700; color: #0F172A;'>Filter Semantic Memory Classification</h4>", unsafe_allow_html=True)
+    if tag in ["semantic", "procedural"]:
+        st.markdown(f"<h4 style='margin-top: 15px; margin-bottom: 8px; font-size: 1.45rem; font-weight: 700; color: #0F172A;'>Filter {tag_capitalized} Memory Classification</h4>", unsafe_allow_html=True)
+        options = ["All", "Onboarding Profile (Explicit)", "Chat Context (Implicit)"] if tag == "semantic" else ["All", "Procedural Guide (Explicit)", "Chat Context (Implicit)"]
         subtag_filter = st.radio(
-            "Filter Semantic Memory Classification",
-            options=["All", "Onboarding Profile (Explicit)", "Chat Context (Implicit)"],
+            f"Filter {tag_capitalized} Memory Classification",
+            options=options,
             horizontal=True,
             label_visibility="collapsed"
         )
@@ -445,8 +541,8 @@ def render_memory_page(username: str, tag: str):
         memories = database.get_memories_by_tag(username, tag)
         st.subheader("All Chronological Entries (Newest First)")
         
-    if tag == "semantic" and subtag_filter != "All":
-        target = "explicit" if "Onboarding" in subtag_filter else "implicit"
+    if tag in ["semantic", "procedural"] and subtag_filter != "All":
+        target = "explicit" if ("Onboarding" in subtag_filter or "Procedural" in subtag_filter) else "implicit"
         memories = [m for m in memories if m.get("subtag") == target]
         
     if not memories:
@@ -472,8 +568,7 @@ def render_memory_page(username: str, tag: str):
                     <span class="memory-time">{formatted_time}</span>
                 </div>
                 <div class="memory-body">
-                    <div class="memory-q">Query: {m['query']}</div>
-                    <div class="memory-r">Response: {m['response']}</div>
+                    {f'<div class="memory-q">Query: {m["query"]}</div><div class="memory-r">Response: {m["response"]}</div>' if m.get("query") else f'<div class="memory-r" style="font-size: 1.1rem; font-weight: 500; color: #1E293B;">{m["response"]}</div>'}
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -570,7 +665,7 @@ def render_knowledge_graph(username: str):
         )
         return
 
-    # ── 3. Chat + Context Graph panel ─────────────────────────────────────
+    # ── Chat + Context Graph panel ─────────────────────────────────────────
     st.markdown(
         "<h3 style='color:#0F172A;margin-bottom:4px;'>Query the Exercise Knowledge Graph</h3>",
         unsafe_allow_html=True,
@@ -669,7 +764,7 @@ def render_knowledge_graph(username: str):
             unsafe_allow_html=True,
         )
 
-    # ── 4. Chat history (collapsible) ─────────────────────────────────────
+    # ── Chat history (collapsible) ─────────────────────────────────────────
     history = st.session_state.get("cognee_chat_history", [])
     if len(history) > 1:
         with st.expander(f"Chat History ({len(history)} questions)", expanded=False):
@@ -910,6 +1005,51 @@ def render_profile_page(username: str):
     q11_val = explicit_map.get("What is your current weight (in kg)?", "")
     p_q11 = st.text_input("11. What is your current weight (in kg)?", value=q11_val, key="prof_q11").strip()
     
+    # Question 12: Country
+    q12_val = explicit_map.get("What is your country?", "India")
+    q12_options = ["India", "United States", "United Kingdom", "Canada", "Australia", "Other"]
+    q12_index = q12_options.index(q12_val) if q12_val in q12_options else 0
+    p_q12 = st.selectbox("12. What is your country?", options=q12_options, index=q12_index, key="prof_q12")
+    
+    # Question 13: Allergies
+    q13_val = explicit_map.get("Do you have any food allergies?", "None")
+    q13_options = ["None", "Peanuts", "Tree nuts", "Soy", "Gluten", "Dairy", "Eggs", "Sesame", "Fish / Shellfish"]
+    q13_default = [item.strip() for item in q13_val.split(",") if item.strip()] if q13_val else ["None"]
+    q13_default = [item for item in q13_default if item in q13_options]
+    if not q13_default:
+        q13_default = ["None"]
+    p_q13 = st.multiselect("13. Do you have any food allergies? (Select all that apply)", options=q13_options, default=q13_default, key="prof_q13")
+    
+    # Question 14: Intolerances
+    q14_val = explicit_map.get("Do you have any food intolerances?", "None")
+    q14_options = ["None", "Lactose", "Fructose", "Histamine", "Gluten sensitivity", "Caffeine"]
+    q14_default = [item.strip() for item in q14_val.split(",") if item.strip()] if q14_val else ["None"]
+    q14_default = [item for item in q14_default if item in q14_options]
+    if not q14_default:
+        q14_default = ["None"]
+    p_q14 = st.multiselect("14. Do you have any food intolerances? (Select all that apply)", options=q14_options, default=q14_default, key="prof_q14")
+    
+    # Question 15: Max prep time
+    q15_val = explicit_map.get("What is the maximum time you can dedicate to meal prep?", "20 mins")
+    q15_options = ["10 mins", "20 mins", "30 mins", "45 mins", "60+ mins"]
+    q15_index = q15_options.index(q15_val) if q15_val in q15_options else 1
+    p_q15 = st.selectbox("15. What is the maximum time you can dedicate to meal prep?", options=q15_options, index=q15_index, key="prof_q15")
+    
+    # Question 16: Preferred cuisines
+    q16_val = explicit_map.get("Which cuisines do you prefer?", "Indian, Mediterranean")
+    q16_options = ["Indian", "Mediterranean", "Mexican", "Italian", "Asian", "American", "Middle Eastern"]
+    q16_default = [item.strip() for item in q16_val.split(",") if item.strip()] if q16_val else ["Indian", "Mediterranean"]
+    q16_default = [item for item in q16_default if item in q16_options]
+    if not q16_default:
+        q16_default = ["Indian", "Mediterranean"]
+    p_q16 = st.multiselect("16. Which cuisines do you prefer? (Select all that apply)", options=q16_options, default=q16_default, key="prof_q16")
+    
+    # Question 17: Typical workout time
+    q17_val = explicit_map.get("What is your typical workout time?", "Evening")
+    q17_options = ["Morning", "Afternoon", "Evening", "Night"]
+    q17_index = q17_options.index(q17_val) if q17_val in q17_options else 2
+    p_q17 = st.selectbox("17. What is your typical workout time?", options=q17_options, index=q17_index, key="prof_q17")
+    
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("Save Profile Settings", key="prof_save_btn", use_container_width=True):
         if not p_q10:
@@ -935,6 +1075,12 @@ def render_profile_page(username: str):
             database.save_or_update_explicit_memory(username, "What is your diet preference?", p_q9)
             database.save_or_update_explicit_memory(username, "What is your current height (in cm)?", p_q10)
             database.save_or_update_explicit_memory(username, "What is your current weight (in kg)?", p_q11)
+            database.save_or_update_explicit_memory(username, "What is your country?", p_q12)
+            database.save_or_update_explicit_memory(username, "Do you have any food allergies?", ", ".join(p_q13))
+            database.save_or_update_explicit_memory(username, "Do you have any food intolerances?", ", ".join(p_q14))
+            database.save_or_update_explicit_memory(username, "What is the maximum time you can dedicate to meal prep?", p_q15)
+            database.save_or_update_explicit_memory(username, "Which cuisines do you prefer?", ", ".join(p_q16))
+            database.save_or_update_explicit_memory(username, "What is your typical workout time?", p_q17)
             
             st.success("Profile updated successfully!")
             time.sleep(0.5)

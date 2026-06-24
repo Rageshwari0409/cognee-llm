@@ -14,7 +14,7 @@ if parent_dir not in sys.path:
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
-import database_chromadb as database
+import database_chroma_new as database
 
 # 50 Ground Truth Memories
 TEST_MEMORIES = [
@@ -22,7 +22,7 @@ TEST_MEMORIES = [
     {"id": 1, "tag": "semantic", "subtag": "implicit", "q": "Who is your personal trainer and when do you meet?", "r": "My personal trainer is named Marcus, and we meet every Wednesday at 5 PM."},
     {"id": 2, "tag": "semantic", "subtag": "explicit", "q": "When was your fitness assessment done?", "r": "Had a fitness assessment on June 12, 2026. Measured body fat at 18.5 percent."},
     {"id": 3, "tag": "semantic", "subtag": "implicit", "q": "What is your preference for morning workouts?", "r": "I prefer morning workouts at 6:30 AM before going to the office."},
-    {"id": 4, "tag": "semantic", "subtag": "explicit", "q": "What is the dynamic warm-up sequence?", "r": "Always start with 5 minutes of rowing, followed by 10 leg swings, 10 arm circles, and 5 bodyweight squats."},
+    {"id": 4, "tag": "procedural", "subtag": "explicit", "q": "What is the dynamic warm-up sequence?", "r": "Always start with 5 minutes of rowing, followed by 10 leg swings, 10 arm circles, and 5 bodyweight squats."},
     {"id": 5, "tag": "semantic", "subtag": "implicit", "q": "Who is your backup trainer?", "r": "If Marcus is busy, my backup trainer is Sarah, who works on Saturday mornings."},
     
     # Injuries & Pain
@@ -54,11 +54,11 @@ TEST_MEMORIES = [
     {"id": 25, "tag": "semantic", "subtag": "implicit", "q": "Do you use lifting straps?", "r": "I only use lifting straps for heavy pull-ups or Romanian deadlifts when grip fatigue is the bottleneck."},
     
     # Routines & Splits
-    {"id": 26, "tag": "semantic", "subtag": "explicit", "q": "What is your weekly workout split?", "r": "My current workout split is a 4-day Upper-Lower routine: Upper on Monday/Thursday, Lower on Tuesday/Friday."},
-    {"id": 27, "tag": "semantic", "subtag": "implicit", "q": "What is your core routine?", "r": "My core finisher is 3 rounds of: 15 hanging leg raises, 30-second plank, and 12 cable woodchops per side."},
-    {"id": 28, "tag": "semantic", "subtag": "explicit", "q": "How do you track your sets?", "r": "I log every working set in a paper notebook, including reps, weight, and rate of perceived exertion (RPE)."},
-    {"id": 29, "tag": "semantic", "subtag": "implicit", "q": "What rest times do you use?", "r": "Rest 3 minutes between heavy compound sets, and 90 seconds for isolation or accessory exercises."},
-    {"id": 30, "tag": "semantic", "subtag": "explicit", "q": "What is your stretching routine?", "r": "Do static stretching post-workout: focus on hamstrings, hip flexors, and chest wall opening for 30 seconds each."},
+    {"id": 26, "tag": "procedural", "subtag": "explicit", "q": "What is your weekly workout split?", "r": "My current workout split is a 4-day Upper-Lower routine: Upper on Monday/Thursday, Lower on Tuesday/Friday."},
+    {"id": 27, "tag": "procedural", "subtag": "implicit", "q": "What is your core routine?", "r": "My core finisher is 3 rounds of: 15 hanging leg raises, 30-second plank, and 12 cable woodchops per side."},
+    {"id": 28, "tag": "procedural", "subtag": "explicit", "q": "How do you track your sets?", "r": "I log every working set in a paper notebook, including reps, weight, and rate of perceived exertion (RPE)."},
+    {"id": 29, "tag": "procedural", "subtag": "implicit", "q": "What rest times do you use?", "r": "Rest 3 minutes between heavy compound sets, and 90 seconds for isolation or accessory exercises."},
+    {"id": 30, "tag": "procedural", "subtag": "explicit", "q": "What is your stretching routine?", "r": "Do static stretching post-workout: focus on hamstrings, hip flexors, and chest wall opening for 30 seconds each."},
     
     # Hydration & Recovery
     {"id": 31, "tag": "semantic", "subtag": "implicit", "q": "What are your hydration targets?", "r": "On workout days, my target water intake is 4 liters; on rest days, it is 3 liters."},
@@ -68,11 +68,11 @@ TEST_MEMORIES = [
     {"id": 35, "tag": "semantic", "subtag": "implicit", "q": "What is your recovery heart rate?", "r": "My resting heart rate is 52 beats per minute, which indicates solid aerobic fitness."},
     
     # Specific Exercise Details
-    {"id": 36, "tag": "semantic", "subtag": "explicit", "q": "How do you do squats?", "r": "Squat to parallel or below, pushing knees outwards, keeping chest up, and driving through the heels."},
-    {"id": 37, "tag": "semantic", "subtag": "implicit", "q": "How do you perform bicep curls?", "r": "Keep elbows locked at the sides, avoid swinging the torso, and squeeze the biceps at the top of the range."},
-    {"id": 38, "tag": "semantic", "subtag": "explicit", "q": "What is your pull-up protocol?", "r": "Perform strict pull-ups with a shoulder-width pronated grip, focus on driving elbows down to engage the lats."},
-    {"id": 39, "tag": "semantic", "subtag": "implicit", "q": "How do you execute lunges?", "r": "Step forward, lowering hips until back knee is near floor, keeping torso upright, and pushing back to start."},
-    {"id": 40, "tag": "semantic", "subtag": "explicit", "q": "How do you do lateral raises?", "r": "Raise dumbbells to the sides with a slight elbow bend, lead with the elbows, and stop at shoulder height."},
+    {"id": 36, "tag": "procedural", "subtag": "explicit", "q": "How do you do squats?", "r": "Squat to parallel or below, pushing knees outwards, keeping chest up, and driving through the heels."},
+    {"id": 37, "tag": "procedural", "subtag": "implicit", "q": "How do you perform bicep curls?", "r": "Keep elbows locked at the sides, avoid swinging the torso, and squeeze the biceps at the top of the range."},
+    {"id": 38, "tag": "procedural", "subtag": "explicit", "q": "What is your pull-up protocol?", "r": "Perform strict pull-ups with a shoulder-width pronated grip, focus on driving elbows down to engage the lats."},
+    {"id": 39, "tag": "procedural", "subtag": "implicit", "q": "How do you execute lunges?", "r": "Step forward, lowering hips until back knee is near floor, keeping torso upright, and pushing back to start."},
+    {"id": 40, "tag": "procedural", "subtag": "explicit", "q": "How do you do lateral raises?", "r": "Raise dumbbells to the sides with a slight elbow bend, lead with the elbows, and stop at shoulder height."},
     
     # Logs & Diary (Episodic)
     {"id": 41, "tag": "semantic", "subtag": "implicit", "q": "How did your bench press session go yesterday?", "r": "Felt strong during yesterday's bench press; completed 4 sets of 8 reps at 80 kilograms."},
@@ -502,7 +502,27 @@ DISTRACTOR_QUERIES = [
     "Explain the concept of neural networks",
     "What are the benefits of reading daily?",
     "How do you bake sourdough bread?",
-    "What is the capital of Japan?"
+    "What is the capital of Japan?",
+    "What is the capital of Australia?",
+    "How do you calculate the area of a circle?",
+    "Who wrote the play Romeo and Juliet?",
+    "What is the speed of light in a vacuum?",
+    "How does a microwave cook food?",
+    "What is the capital of Canada?",
+    "Explain the theory of general relativity.",
+    "What are the primary colors of light?",
+    "How do you make a cup of filter coffee?",
+    "What is the difference between compiler and interpreter?",
+    "How do tides work in the ocean?",
+    "Who was the first man to walk on the moon?",
+    "What is the function of red blood cells?",
+    "How do you write a hello world program in Rust?",
+    "What is the capital of Germany?",
+    "Explain the concept of supply and demand.",
+    "Who painted the Starry Night?",
+    "What is the tallest mountain in the world?",
+    "How do you prune a tomato plant?",
+    "What is the chemical formula for water?"
 ]
 
 def run_evaluation():
@@ -540,7 +560,7 @@ def run_evaluation():
         
         database.save_memory(
             username=test_user,
-            tag="semantic",
+            tag=mem["tag"],
             query=mem["q"],
             response=mem["r"],
             subtag=mem["subtag"],
@@ -575,7 +595,7 @@ def run_evaluation():
     
     for idx, q_case in enumerate(EVAL_QUERIES):
         target_id = q_case["target_id"]
-        tag = "semantic"
+        tag = q_case["tag"]
         query_text = q_case["query"]
         expected_db_id = db_id_map[target_id]
         
@@ -754,7 +774,7 @@ def generate_notebook(db_id_map, summary_results):
                 "    sys.path.insert(0, parent_dir)\n",
                 "if notebook_dir not in sys.path:\n",
                 "    sys.path.insert(0, notebook_dir)\n",
-                "\n",                "import database_chromadb as database\n",
+                "\n",                "import database_chroma_new as database\n",
                 "print(\"Embedding Model status:\", database.get_db_status())"
             ]
         },
@@ -795,7 +815,7 @@ def generate_notebook(db_id_map, summary_results):
                 "    timestamp = (now - timedelta(hours=hours_ago)).isoformat()\n",
                 "    database.save_memory(\n",
                 "        username=test_user,\n",
-                "        tag=\"semantic\",\n",
+                "        tag=mem[\"tag\"],\n",
                 "        query=mem[\"q\"],\n",
                 "        response=mem[\"r\"],\n",
                 "        subtag=mem[\"subtag\"],\n",
@@ -825,7 +845,7 @@ def generate_notebook(db_id_map, summary_results):
                 "\n",
                 "for idx, q_case in enumerate(EVAL_QUERIES):\n",
                 "    target_id = q_case[\"target_id\"]\n",
-                "    tag = \"semantic\"\n",
+                "    tag = q_case[\"tag\"]\n",
                 "    query_text = q_case[\"query\"]\n",
                 "    expected_id = db_id_map[target_id]\n",
                 "    \n",

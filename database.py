@@ -93,7 +93,8 @@ def init_db():
             query TEXT NOT NULL,
             response TEXT NOT NULL,
             timestamp TEXT NOT NULL,
-            embedding BLOB
+            embedding BLOB,
+            subtag TEXT DEFAULT 'implicit'
         )
     """)
     

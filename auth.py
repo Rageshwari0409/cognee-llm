@@ -61,3 +61,17 @@ def verify_user(username: str, password: str) -> bool:
         stored_hash = row[0]
         return stored_hash == _hash_password(password)
     return False
+
+def user_exists(username: str) -> bool:
+    """Checks if a username already exists in the database."""
+    username = username.strip().lower()
+    if not username:
+        return False
+        
+    init_auth_db()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM users WHERE username = ?", (username,))
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
