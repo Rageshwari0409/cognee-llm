@@ -5,17 +5,19 @@ import os
 from datetime import datetime
 
 def call_gemini_api(api_key: str, user_query: str, history_context: str = "") -> dict:
-    # Directly define API version and Model name variables as requested
-    api_version = os.environ.get("GEMINI_API_VERSION", "v1")
-    model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-flash")
+    from google import genai
+    
+    model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-flash-lite-latest")
+    if model_name == "gemini-flash-lite-latest":
+        model_name = "gemini-flash-lite-latest"
     
     prompt = f"""You are a professional, encouraging, and intelligent AI Workout Coach.
 Analyze the user's query and generate:
 1. A highly tailored, high-quality, professional coaching response.
 2. Extracted memory logs from the interaction grouped into:
-   - "semantic": General fitness concepts, physiological rules, or facts.
-   - "episodic": User's personal experiences, status, logs, or events.
-   - "procedural": Actionable guide steps, workout splitting guidelines, or execution manuals.
+   - "semantic": Universal sports science laws, nutritional facts, and biomechanical principles—such as mechanical tension driving hypertrophy or the necessity of a caloric deficit for fat loss—that serve as the objective, unchanging textbook for structuring any safe and effective training program. General fitness concepts, physiological rules, or facts.
+   - "episodic": Your personalized athlete dashboard tracking time-stamped history, containing exact workout logs, personal records, specific injury history, and subjective biofeedback like sleep quality, daily stress levels, and localized muscle soreness from past sessions. User's personal experiences, status, logs, or events.
+   - "procedural": The tactical playbook containing step-by-step technical execution manuals, setup cues for movements like the Romanian deadlift, progression protocols, and specific scheduling rules for building structured workout splits like Push/Pull/Legs. Actionable guide steps, workout splitting guidelines, or execution manuals.
 
 Rules:
 - Topic Guardrail: If the User Query is not related to fitness, workouts, exercises, gym training, sports science, nutrition, diet, muscle building, joint injury recovery, or physical health coaching, DO NOT answer the question. Instead, return a polite refusal stating that you are an AI Workout Coach and can only answer questions related to training, fitness, nutrition, and health. In this case, "memories" should contain empty lists for all tags.
@@ -36,79 +38,349 @@ Relevant Retrieved Memories from database:
 User Query: {user_query}
 JSON Output:"""
 
-    # Simplified payload without responseMimeType for maximum compatibility
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": prompt}
-                ]
-            }
-        ]
-    }
-    
-    headers = {
-        "Content-Type": "application/json"
-    }
-    
-    url = f"https://generativelanguage.googleapis.com/{api_version}/models/{model_name}:generateContent?key={api_key}"
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers=headers,
-        method="POST"
-    )
-    
     try:
-        with urllib.request.urlopen(req, timeout=90) as response:
-            res_data = response.read().decode("utf-8")
-            res_json = json.loads(res_data)
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config={
+                "response_mime_type": "application/json",
+                "temperature": 0.4,
+            }
+        )
+        
+        text_content = getattr(response, "text", None) or ""
+        if not text_content.strip():
+            raise RuntimeError("Empty response from Gemini")
             
-            # Parse the JSON response text
-            text_content = res_json["candidates"][0]["content"]["parts"][0]["text"]
+        json_match = re.search(r"\{.*\}", text_content, re.DOTALL)
+        if json_match:
+            result = json.loads(json_match.group(0), strict=False)
+        else:
+            result = json.loads(text_content, strict=False)
             
-            # Extract JSON using regex (robust to markdown wrapper blocks)
-            json_match = re.search(r"\{.*\}", text_content, re.DOTALL)
-            if json_match:
-                result = json.loads(json_match.group(0), strict=False)
-            else:
-                result = json.loads(text_content, strict=False)
-            
-            # Validate structure
-            if "response" in result and "memories" in result:
-                mems = result["memories"]
-                if isinstance(mems, dict):
-                    return {
-                        "response": result["response"],
-                        "memories": {
-                            "semantic": mems.get("semantic", []),
-                            "episodic": mems.get("episodic", []),
-                            "procedural": mems.get("procedural", [])
-                        }
+        if "response" in result and "memories" in result:
+            mems = result["memories"]
+            if isinstance(mems, dict):
+                return {
+                    "response": result["response"],
+                    "memories": {
+                        "semantic": mems.get("semantic", []),
+                        "episodic": mems.get("episodic", []),
+                        "procedural": mems.get("procedural", [])
                     }
-            raise ValueError("Invalid structure returned by Gemini")
-    except urllib.error.HTTPError as http_err:
-        try:
-            error_body = http_err.read().decode("utf-8")
-            err_json = json.loads(error_body)
-            err_msg = err_json.get("error", {}).get("message", http_err.reason)
-            print(f"Gemini API Call ({api_version}/{model_name}) failed: {err_msg}")
-        except Exception:
-            print(f"Gemini API Call ({api_version}/{model_name}) failed with code {http_err.code}")
-        raise http_err
-    except Exception as other_err:
-        print(f"Gemini API Call ({api_version}/{model_name}) error: {other_err}")
-        raise other_err
+                }
+        raise ValueError("Invalid structure returned by Gemini")
+    except Exception as e:
+        print(f"Gemini API Call ({model_name}) error: {e}")
+        raise e
             
 
 
-def generate_coach_response(user_query: str, username: str) -> dict:
+def get_user_profile_dict(username: str) -> dict:
     """
-    Generates a response from the coach. Calls the real Gemini API if an API key is provided
-    (integrating user memories fetched from the DB), otherwise falls back to simulated rule-based generation.
+    Query explicit semantic memories from ChromaDB and compile a profile dictionary
+    matching DietCoach's schema.
     """
-    # Try retrieving API key in order of precedence:
-    # 1. User manual input from Streamlit Session State (UI override)
+    import database_chroma_new as database
+    memories = database.get_memories_by_tag(username, "semantic")
+    explicit_map = {}
+    for m in memories:
+        if m.get("subtag") == "explicit":
+            explicit_map[m["query"]] = m["response"]
+
+    print(f"DEBUG: explicit_map for user '{username}' = {explicit_map}")
+
+    def find_val(keywords, default=None):
+        for q, r in explicit_map.items():
+            if all(kw in q.lower() for kw in keywords):
+                return r
+        return default
+
+    # Diet preference mapping
+    diet_pref = find_val(["diet preference"], "Non Vegan")
+    diet_types = ["vegan"] if diet_pref and diet_pref.lower() == "vegan" else ["non-vegan"]
+
+    # Fitness goal mapping
+    primary_goal_raw = find_val(["fitness goal"], "Improve General Fitness & Health")
+    fitness_goal = "general_fitness_maintenance"
+    if "muscle" in primary_goal_raw.lower() or "strength" in primary_goal_raw.lower():
+        fitness_goal = "muscle_gain_hypertrophy"
+    elif "loss" in primary_goal_raw.lower() or "weight" in primary_goal_raw.lower():
+        fitness_goal = "fat_loss_body_recomposition"
+
+    # Workout frequency mapping
+    freq_raw = find_val(["how often", "work out"], "2-3 times a week")
+    workout_days = 3
+    if "daily" in freq_raw.lower():
+        workout_days = 7
+    elif "once" in freq_raw.lower():
+        workout_days = 1
+    elif "rarely" in freq_raw.lower():
+        workout_days = 0
+
+    # Focus area & workout types mapping
+    focus_raw = find_val(["focus on"], "Full Body Core & Flexibility")
+    workout_types = ["strength_hypertrophy"]
+    if "cardio" in focus_raw.lower():
+        workout_types = ["cardio_endurance"]
+    elif "full" in focus_raw.lower() or "core" in focus_raw.lower():
+        workout_types = ["strength_hypertrophy", "cardio_endurance"]
+
+    # Weight parsing
+    weight_raw = find_val(["weight"], None)
+    weight_kg = None
+    if weight_raw:
+        try:
+            nums = re.findall(r"\d+\.?\d*", weight_raw)
+            if nums:
+                weight_kg = float(nums[0])
+        except Exception:
+            pass
+
+    # Height parsing
+    height_raw = find_val(["height"], None)
+    height_cm = None
+    if height_raw:
+        try:
+            nums = re.findall(r"\d+\.?\d*", height_raw)
+            if nums:
+                height_cm = float(nums[0])
+        except Exception:
+            pass
+
+    # Country mapping
+    country_raw = find_val(["country"], "India")
+    country_code = "IN"
+    if "united states" in country_raw.lower() or "us" in country_raw.lower():
+        country_code = "US"
+    elif "united kingdom" in country_raw.lower() or "uk" in country_raw.lower() or "gb" in country_raw.lower():
+        country_code = "GB"
+    elif "canada" in country_raw.lower() or "ca" in country_raw.lower():
+        country_code = "CA"
+    elif "australia" in country_raw.lower() or "au" in country_raw.lower():
+        country_code = "AU"
+
+    # Allergies parsing (filter out 'none' values)
+    allergies_raw = find_val(["allergies"], "None")
+    allergies = [a.strip().lower() for a in allergies_raw.split(",") if a.strip() and a.strip().lower() != "none"]
+
+    # Intolerances parsing
+    intolerances_raw = find_val(["intolerances"], "None")
+    intolerances = [i.strip().lower() for i in intolerances_raw.split(",") if i.strip() and i.strip().lower() != "none"]
+
+    # Meal prep time limit parsing
+    max_prep_raw = find_val(["meal prep"], "20 mins")
+    max_prep = 20
+    try:
+        nums = re.findall(r"\d+", max_prep_raw)
+        if nums:
+            max_prep = int(nums[0])
+    except Exception:
+        pass
+
+    # Preferred cuisines parsing
+    cuisines_raw = find_val(["cuisines"], "Indian, Mediterranean")
+    cuisines = [c.strip() for c in cuisines_raw.split(",") if c.strip() and c.strip().lower() != "none"]
+
+    # Typical workout time
+    typical_time = find_val(["typical workout time"], "Evening")
+
+    # Extra onboarding questions
+    life_stage = find_val(["life stage"], "Working Professional")
+    injuries = find_val(["injuries"], "None")
+    workout_level = find_val(["workout level"], "Beginner")
+    training_location = find_val(["prefer to train"], "At Home")
+    workout_duration_limit = find_val(["time can you dedicate"], "30-60 mins")
+
+    # Build the profile dict containing standard and raw fields
+    profile = {
+        "country": country_code,
+        "onboarding_complete": True,
+        "life_stage": life_stage,
+        "injuries": injuries,
+        "workout_level": workout_level,
+        "training_location": training_location,
+        "workout_duration_limit": workout_duration_limit,
+        "diet_constraints": {
+            "diet_type": diet_types,
+            "allergies": allergies,
+            "intolerances": intolerances
+        },
+        "preferences": {
+            "max_prep_minutes": max_prep,
+            "cuisines_liked": cuisines
+        },
+        "goals": {
+            "primary": primary_goal_raw.lower()
+        },
+        "fitness_profile": {
+            "workout_types": workout_types,
+            "workout_days_per_week": workout_days,
+            "typical_workout_time": typical_time.lower() if typical_time else "evening",
+            "fitness_goal": fitness_goal,
+            "body_weight_kg": weight_kg,
+            "height_cm": height_cm
+        },
+        "raw_onboarding_answers": explicit_map
+    }
+    return profile
+
+
+def get_user_memories_string(username: str) -> str:
+    """
+    Fetch memories from ChromaDB and format them as a single string.
+    Each memory is prefixed with its subtag, e.g. '-[explicit]' or '-[implicit]'.
+    """
+    import database_chroma_new as database
+    
+    # Get all semantic, episodic, and procedural memories
+    sem = database.get_memories_by_tag(username, "semantic")
+    epi = database.get_memories_by_tag(username, "episodic")
+    pro = database.get_memories_by_tag(username, "procedural")
+    
+    # Combine them
+    all_mems = []
+    for m in sem:
+        all_mems.append((m.get("timestamp", ""), m.get("subtag", "implicit"), m.get("response", "")))
+    for m in epi:
+        all_mems.append((m.get("timestamp", ""), m.get("subtag", "implicit"), m.get("response", "")))
+    for m in pro:
+        all_mems.append((m.get("timestamp", ""), m.get("subtag", "implicit"), m.get("response", "")))
+        
+    # Sort by timestamp ascending so older context is first and newer is last
+    all_mems.sort(key=lambda x: x[0])
+    
+    # Keep the latest 30 memories to prevent prompt bloating
+    all_mems = all_mems[-30:]
+    
+    lines = []
+    for ts, subtag, response in all_mems:
+        cleaned_subtag = subtag.strip(" -[]")
+        lines.append(f"-[{cleaned_subtag}] {response}")
+        
+    if not lines:
+        return "-[explicit] User has initialized a new profile."
+        
+    return "\n".join(lines)
+
+
+def extract_memories(api_key: str, user_query: str, response_text: str) -> dict:
+    """
+    Call Gemini to extract new memories (semantic, episodic, procedural)
+    from the current conversation turn.
+    """
+    from google import genai
+    
+    model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-flash-lite-latest")
+    if model_name == "gemini-flash-lite-latest":
+        model_name = "gemini-flash-lite-latest"
+    
+    prompt = f"""You are an advanced cognitive memory compiler for an AI Workout Coach.
+Your job is to analyze a single conversation turn between a User and their Coach, and extract key facts/guidelines to save in the Coach's long-term memory database.
+
+Input:
+User Query: {user_query}
+Coach Response: {response_text}
+
+Rules for Extraction:
+1. "semantic": Extract general fitness concepts, physiological rules, nutrition/sports science facts, or hard rules mentioned.
+   - Do NOT write personal details here.
+   - Every entry MUST be a complete, third-person declarative sentence summarizing the fact (e.g. "The user loves to have yogurt as their main preference" or "Creatine baseline levels are lower for vegetarians"). Do NOT store as a Q&A or conversation fragment.
+2. "episodic": Extract the user's personal experiences, workout logs, symptoms, pain/injuries, preferences, or specific physical status mentioned in this turn.
+   - Every entry MUST be a complete, third-person declarative sentence summarizing the user's details, choice, or log (e.g. "The user has knee pain when performing squats" or "The user wants to incorporate eggs into their diet"). Do NOT store as a Q&A or conversation fragment.
+3. "procedural": Extract actionable step-by-step guides, exercise instructions, split setup rules, or execution manuals mentioned in the coach's response.
+
+Format your output strictly as a JSON object matching this schema (with no markdown formatting or extra text outside the JSON):
+{{
+  "semantic": ["fact 1", "fact 2"],
+  "episodic": ["personal log 1"],
+  "procedural": ["action guide step 1"]
+}}
+"""
+
+    try:
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config={
+                "response_mime_type": "application/json",
+                "temperature": 0.2,
+            }
+        )
+        
+        # Safely extract text parts to avoid thought_signature warnings
+        text_parts = []
+        try:
+            if response.candidates and response.candidates[0].content.parts:
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, "text") and part.text:
+                        text_parts.append(part.text)
+        except Exception:
+            pass
+            
+        text_content = "".join(text_parts) if text_parts else (getattr(response, "text", None) or "")
+        if not text_content.strip():
+            raise RuntimeError("Empty response from Gemini")
+            
+        json_match = re.search(r"\{.*\}", text_content, re.DOTALL)
+        if json_match:
+            result = json.loads(json_match.group(0), strict=False)
+        else:
+            result = json.loads(text_content, strict=False)
+            
+        proc_list = result.get("procedural", []) or result.get("procedics", []) or result.get("procedurals", [])
+        return {
+            "semantic": result.get("semantic", []) or [],
+            "episodic": result.get("episodic", []) or [],
+            "procedural": proc_list or []
+        }
+    except Exception as e:
+        print(f"Failed to extract memories using Gemini: {e}")
+        return {"semantic": [], "episodic": [], "procedural": []}
+
+
+def simulate_memory_extraction(user_query: str) -> dict:
+    """Fallback offline logic to extract memories based on query keywords."""
+    query_lower = user_query.lower()
+    memories = {"semantic": [], "episodic": [], "procedural": []}
+    
+    if any(k in query_lower for k in ["pain", "hurt", "sore", "injury", "knee", "shoulder", "back"]):
+        body_part = "knees" if "knee" in query_lower else ("shoulders" if "shoulder" in query_lower else ("lower back" if "back" in query_lower else "joints"))
+        memories["episodic"].append(f"User experienced discomfort or pain in the {body_part} during training and was advised to rest.")
+        memories["semantic"].append("Ligaments and tendons have lower blood supply than muscles, causing them to recover and adapt slower to load.")
+        memories["procedural"].append(f"Joint Pain Recovery Protocol: 1. Reduce workout load immediately. 2. Switch to low-impact exercise variations. 3. Monitor pain levels for 48 hours.")
+    elif any(k in query_lower for k in ["squat", "leg", "quad", "glute"]):
+        memories["episodic"].append("User queried about lower body training (squats/legs) and is focused on quad/glute development.")
+        memories["semantic"].append("Squats target the quadriceps, glutes, and core. Keeping knees in line with toes prevents patellar shear stress.")
+        memories["procedural"].append("Barbell Squat Form Guide: 1. Place bar on upper traps. 2. Set feet shoulder-width apart. 3. Hinge at hips and sit back. 4. Keep knees tracking over toes. 5. Push through mid-foot to stand.")
+    elif any(k in query_lower for k in ["deadlift", "back", "lats", "pullup", "row"]):
+        memories["episodic"].append("User asked about back exercises or deadlift technique, highlighting posterior chain training.")
+        memories["semantic"].append("Deadlifts engage the posterior chain (hamstrings, glutes, lower back). A rounded spine under load causes lumbar compression.")
+        memories["procedural"].append("Deadlift Form Protocol: 1. Stand with mid-foot under the bar. 2. Bend and grip the bar. 3. Drop hips slightly and flatten back. 4. Pull slack out of the bar. 5. Drive legs into the floor and stand.")
+    elif any(k in query_lower for k in ["protein", "eat", "diet", "nutrition", "meal", "calorie", "bulk", "cut"]):
+        memories["episodic"].append("User checked nutrition and dietary recommendations, focusing on protein intake or weight goals.")
+        memories["semantic"].append("Daily protein intake for muscle building should be 1.6 to 2.2 grams per kilogram of body weight, spread across meals.")
+        memories["procedural"].append("Daily Nutrition Setup: 1. Calculate target daily caloric intake. 2. Set protein target (1.8g/kg). 3. Divide protein intake into 4 equal meals. 4. Track hydration (3-4 liters daily).")
+    elif any(k in query_lower for k in ["routine", "split", "plan", "program", "schedule", "week"]):
+        memories["episodic"].append("User is designing or adjusting their weekly workout schedule and training split.")
+        memories["semantic"].append("Muscle groups require 48 to 72 hours of rest between intense training sessions to optimize recovery and growth.")
+        memories["procedural"].append("Weekly PPL Split Setup: 1. Day 1: Push (Chest, Shoulders, Triceps). 2. Day 2: Pull (Back, Biceps). 3. Day 3: Legs (Quads, Hamstrings, Calves). 4. Day 4: Rest. 5. Repeat or Rest.")
+    else:
+        memories["episodic"].append("User initiated conversation about general fitness goals and workout consistency.")
+        memories["semantic"].append("Progressive overload (increasing weight, reps, or reducing rest) is required to trigger muscle hypertrophy.")
+        memories["procedural"].append("Progressive Overload Application: 1. Keep a workout log. 2. Aim to add 1 rep or small weight increment each session. 3. Maintain strict form.")
+        
+    return memories
+
+
+def generate_coach_response(user_query: str, username: str, use_memory: bool = True) -> dict:
+    """
+    Generates a response from the coach. Instantiates and calls DietCoach
+    (integrating user profile and memories fetched live from ChromaDB).
+    """
+    # 1. Fetch API Key
     api_key = None
     try:
         import streamlit as st
@@ -116,7 +388,6 @@ def generate_coach_response(user_query: str, username: str) -> dict:
     except Exception:
         pass
 
-    # 2. Streamlit Cloud Secrets (standard for deployed Streamlit Cloud apps)
     if not api_key:
         try:
             import streamlit as st
@@ -127,11 +398,9 @@ def generate_coach_response(user_query: str, username: str) -> dict:
         except Exception:
             pass
 
-    # 3. Environment Variables (e.g. system environment)
     if not api_key:
         api_key = os.environ.get("GEMINI_API_KEY")
 
-    # 4. Local .env file fallback (for local development)
     if not api_key:
         try:
             env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -147,220 +416,63 @@ def generate_coach_response(user_query: str, username: str) -> dict:
                                 break
         except Exception:
             pass
-            
-    if api_key:
-        try:
-            # 1. Fetch relevant memories for retrieval context
-            history_context = ""
-            try:
-                import database_chromadb as database
-                related_semantic = database.vector_query_memories(username, "semantic", user_query, top_k=3)
-                related_episodic = database.vector_query_memories(username, "episodic", user_query, top_k=3)
-                related_procedural = database.vector_query_memories(username, "procedural", user_query, top_k=3)
-                
-                context_parts = []
-                if related_semantic:
-                    context_parts.append("Semantic Knowledge (Facts/Goals):")
-                    for m in related_semantic:
-                        context_parts.append(f"- Query: {m['query']} | Answer: {m['response']}")
-                if related_episodic:
-                    context_parts.append("Episodic Memories (Workout details/Injuries/History):")
-                    for m in related_episodic:
-                        context_parts.append(f"- {m['response']}")
-                if related_procedural:
-                    context_parts.append("Procedural Guidance (Form protocols/Guides):")
-                    for m in related_procedural:
-                        context_parts.append(f"- {m['response']}")
-                        
-                if context_parts:
-                    history_context = "\n".join(context_parts)
-            except Exception as db_err:
-                print(f"Failed to fetch memories for LLM context: {db_err}")
-                
-            # 2. Call Gemini
-            return call_gemini_api(api_key, user_query, history_context)
-        except Exception as e:
-            print(f"Error calling live Gemini API: {e}. Falling back to simulator.")
 
-    # Fallback to simulated coach
-    query_lower = user_query.lower()
-    
-    # Check if the query is related to the topic of fitness/workouts/health/nutrition/diet
-    topic_keywords = [
-        "pain", "hurt", "sore", "injury", "knee", "shoulder", "back", "joint", "muscle", "stretch",
-        "squat", "leg", "quad", "glute", "deadlift", "lat", "pullup", "row", "bench", "press", "lift",
-        "chest", "arm", "bicep", "tricep", "cardio", "run", "walk", "jog", "sprint", "swim", "cycle",
-        "protein", "eat", "diet", "nutrition", "meal", "calorie", "bulk", "cut", "fat", "weight", "carb",
-        "food", "water", "hydrate", "supplement", "creatine", "vitamin", "sleep", "rest", "recovery",
-        "routine", "split", "plan", "program", "schedule", "week", "workout", "gym", "fitness", "exercise",
-        "training", "coach", "athlete", "stretch", "warmup", "cooldown", "injuries", "goal", "stage",
-        "active", "level"
-    ]
-    
-    is_related = any(k in query_lower for k in topic_keywords)
-    
-    # Simple greetings are allowed but redirect to fitness
-    if query_lower.strip() in ["hello", "hi", "hey", "greetings", "yo"]:
-        return {
-            "response": "Hello! I am your AI Workout Coach. How can I help you with your fitness, training, or nutrition goals today?",
-            "memories": {"semantic": [], "episodic": [], "procedural": []}
-        }
-        
-    if not is_related:
-        return {
-            "response": "I am your AI Workout Coach, specialized in training guidance, nutrition planning, and injury prevention. I can only assist you with fitness, workout, diet, or health-related questions. Please let me know how I can help you with your physical training!",
-            "memories": {"semantic": [], "episodic": [], "procedural": []}
-        }
-        
-    # Initialize default response structure
-    response_text = ""
-    memories = {
-        "semantic": [],
-        "episodic": [],
-        "procedural": []
-    }
-
-    
-    # Case 1: Injury / Pain (e.g. Knee pain, shoulder soreness)
-    if any(k in query_lower for k in ["pain", "hurt", "sore", "injury", "knee", "shoulder", "back"]):
-        # Identify specific body part
-        body_part = "joints"
-        if "knee" in query_lower:
-            body_part = "knees"
-        elif "shoulder" in query_lower:
-            body_part = "shoulders"
-        elif "back" in query_lower:
-            body_part = "lower back"
-            
-        response_text = (
-            f"I hear you, and it is crucial to address any discomfort in your {body_part} immediately. "
-            "Pain or joint soreness is a signal that your body is reaching its limit, which is often due to "
-            "form breakdown, poor mobility, or lack of recovery. "
-            "For joint health, remember that ligaments and tendons have a much lower blood supply than muscle, "
-            "meaning they take significantly longer to adapt to weight loads and recover from strain. "
-            "I highly recommend reducing the load or switching to a low-impact variation until the pain subsides. "
-            "Let's make sure we log this session note to closely monitor your recovery in the coming workouts."
-        )
-        
-        # Extract memories
-        memories["episodic"].append(
-            f"User experienced discomfort or pain in the {body_part} during training and was advised to rest."
-        )
-        memories["semantic"].append(
-            "Ligaments and tendons have lower blood supply than muscles, causing them to recover and adapt slower to load."
-        )
-        memories["procedural"].append(
-            f"Joint Pain Recovery Protocol: 1. Reduce workout load immediately. 2. Switch to low-impact exercise variations. 3. Monitor pain levels for 48 hours."
-        )
-
-    # Case 2: Squat / Leg exercises
-    elif any(k in query_lower for k in ["squat", "leg", "quad", "glute"]):
-        response_text = (
-            "Squats are the undisputed king of lower body exercises, primarily targeting the quadriceps, glutes, "
-            "and core. Proper execution is critical for both safety and effectiveness. "
-            "To perform a squat safely, keep your chest upright, sit back into your hips, and ensure your knees "
-            "track in line with your toes rather than caving inward. "
-            "Maintaining proper foot stability and pushing through your mid-foot will optimize muscle recruitment. "
-            "Since you are focusing on lower body training, let's keep track of your movement patterns and progress."
-        )
-        
-        memories["episodic"].append(
-            "User queried about lower body training (squats/legs) and is focused on quad/glute development."
-        )
-        memories["semantic"].append(
-            "Squats target the quadriceps, glutes, and core. Keeping knees in line with toes prevents patellar shear stress."
-        )
-        memories["procedural"].append(
-            "Barbell Squat Form Guide: 1. Place bar on upper traps. 2. Set feet shoulder-width apart. 3. Hinge at hips and sit back. 4. Keep knees tracking over toes. 5. Push through mid-foot to stand."
-        )
-
-    # Case 3: Deadlift / Back exercises
-    elif any(k in query_lower for k in ["deadlift", "back", "lats", "pullup", "row"]):
-        response_text = (
-            "A strong back is the foundation of structural strength and posture. Exercises like deadlifts, rows, "
-            "and pull-ups recruit major muscle groups including the latissimus dorsi, rhomboids, and erector spinae. "
-            "When deadlifting, your spine must remain neutral; do not round your lower back. "
-            "Keep the bar close to your shins, drive through your legs, and hinge at the hips. "
-            "This ensures the load is safely distributed across the posterior chain rather than the lumbar spine. "
-            "Let's document this so we prioritize spinal alignment in your back routines."
-        )
-        
-        memories["episodic"].append(
-            "User asked about back exercises or deadlift technique, highlighting posterior chain training."
-        )
-        memories["semantic"].append(
-            "Deadlifts engage the posterior chain (hamstrings, glutes, lower back). A rounded spine under load causes lumbar compression."
-        )
-        memories["procedural"].append(
-            "Deadlift Form Protocol: 1. Stand with mid-foot under the bar. 2. Bend and grip the bar. 3. Drop hips slightly and flatten back. 4. Pull slack out of the bar. 5. Drive legs into the floor and stand."
-        )
-
-    # Case 4: Nutrition / Protein / Diet
-    elif any(k in query_lower for k in ["protein", "eat", "diet", "nutrition", "meal", "calorie", "bulk", "cut"]):
-        response_text = (
-            "Nutrition represents the fuel for your workouts and the building blocks for muscle repair. "
-            "To build muscle, a daily protein intake of approximately 1.6 to 2.2 grams per kilogram of body weight "
-            "is recommended by sports science literature. "
-            "Furthermore, muscle synthesis is optimized when protein intake is distributed evenly across 3 to 5 meals "
-            "throughout the day. "
-            "Whether you are in a caloric deficit for fat loss or a caloric surplus for muscle building, prioritizing "
-            "whole foods and adequate protein is essential. I will log this nutrition reference for your coach dashboard."
-        )
-        
-        memories["episodic"].append(
-            "User checked nutrition and dietary recommendations, focusing on protein intake or weight goals."
-        )
-        memories["semantic"].append(
-            "Daily protein intake for muscle building should be 1.6 to 2.2 grams per kilogram of body weight, spread across meals."
-        )
-        memories["procedural"].append(
-            "Daily Nutrition Setup: 1. Calculate target daily caloric intake. 2. Set protein target (1.8g/kg). 3. Divide protein intake into 4 equal meals. 4. Track hydration (3-4 liters daily)."
-        )
-
-    # Case 5: Routine / Split (e.g. Push Pull Legs, Workout plan)
-    elif any(k in query_lower for k in ["routine", "split", "plan", "program", "schedule", "week"]):
-        response_text = (
-            "Designing a balanced workout split is critical to allow adequate muscle recovery. A standard "
-            "Push-Pull-Legs (PPL) split is highly effective. It groups muscles that work together: "
-            "chest/shoulders/triceps on Push day, back/biceps on Pull day, and legs/abs on Legs day. "
-            "This split ensures each muscle group is trained with sufficient intensity while getting "
-            "at least 48 to 72 hours of rest before being worked again. "
-            "I recommend a 3 to 6 day weekly training frequency depending on your experience. Let's record this "
-            "split structure to guide your scheduling."
-        )
-        
-        memories["episodic"].append(
-            "User is designing or adjusting their weekly workout schedule and training split."
-        )
-        memories["semantic"].append(
-            "Muscle groups require 48 to 72 hours of rest between intense training sessions to optimize recovery and growth."
-        )
-        memories["procedural"].append(
-            "Weekly PPL Split Setup: 1. Day 1: Push (Chest, Shoulders, Triceps). 2. Day 2: Pull (Back, Biceps). 3. Day 3: Legs (Quads, Hamstrings, Calves). 4. Day 4: Rest. 5. Repeat or Rest."
-        )
-
-    # Default / General Workout Advice
+    # 2. Get user profile and memories from ChromaDB
+    if use_memory:
+        profile = get_user_profile_dict(username)
+        memories_str = get_user_memories_string(username)
     else:
-        response_text = (
-            "Consistency and progressive overload are the two core tenets of any successful physical transformation. "
-            "Progressive overload means gradually increasing the stress placed on your muscles over time, "
-            "which can be achieved by adding weight, increasing repetitions, or shortening rest periods. "
-            "Always prioritize correct exercise execution before increasing training intensity. "
-            "I'm here to help you refine your workouts, stay consistent, and avoid injury. "
-            "Tell me more about your fitness goals so we can customize this journey."
-        )
+        profile = {}
+        memories_str = ""
+
+    # 3. Instantiate and run DietCoach
+    from fitness_coach import DietCoach
+    
+    coach_session = None
+    try:
+        import streamlit as st
+        if "coach_session" not in st.session_state:
+            st.session_state["coach_session"] = {
+                "coaching_paused": False,
+                "pause_reason": None,
+                "last_safety_event": None,
+                "turn_count": 0
+            }
+        coach_session = st.session_state["coach_session"]
+    except Exception:
+        pass
         
-        memories["episodic"].append(
-            "User initiated conversation about general fitness goals and workout consistency."
-        )
-        memories["semantic"].append(
-            "Progressive overload (increasing weight, reps, or reducing rest) is required to trigger muscle hypertrophy."
-        )
-        memories["procedural"].append(
-            "Progressive Overload Application: 1. Keep a workout log. 2. Aim to add 1 rep or small weight increment each session. 3. Maintain strict form."
-        )
+    if not coach_session:
+        coach_session = {
+            "coaching_paused": False,
+            "pause_reason": None,
+            "last_safety_event": None,
+            "turn_count": 0
+        }
+
+    # Increment turn count
+    coach_session["turn_count"] = coach_session.get("turn_count", 0) + 1
+
+    # Instantiate DietCoach
+    coach = DietCoach(api_key=api_key, mock=not bool(api_key))
+    
+    # Generate reply
+    result = coach.chat(
+        message=user_query,
+        session=coach_session,
+        profile=profile,
+        memories=memories_str
+    )
+    
+    response_text = result["reply"]
+
+    # 4. Extract memories
+    if api_key:
+        extracted_memories = extract_memories(api_key, user_query, response_text)
+    else:
+        extracted_memories = simulate_memory_extraction(user_query)
 
     return {
         "response": response_text,
-        "memories": memories
+        "memories": extracted_memories
     }
